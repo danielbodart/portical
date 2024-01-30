@@ -1,0 +1,45 @@
+#!/usr/bin/env bash
+
+ROOT_DEVICE="http://10.0.0.1:5000/rootDesc.xml"
+
+function forward() {
+  local external_port=$1
+  local internal_host=$2
+  local internal_port=$3
+  local protocol=$4
+  local machine=$5
+
+  echo ""
+  upnpc -u ${ROOT_DEVICE} -e "Portical ${machine} ${protocol} ${external_port} -> ${internal_host}:${internal_port} " \
+    -a ${internal_host} ${internal_port} ${external_port} ${protocol}
+}
+
+function extract_rule() {
+  if [[ $1 =~ portical\.upnp\.forward:([0-9]+):([0-9]+)(/(tcp|udp))? ]]; then
+      external_port="${BASH_REMATCH[1]}"
+      internal_port="${BASH_REMATCH[2]}"
+      protocol="${BASH_REMATCH[4]}"
+  fi
+}
+
+function find() {
+  docker ps --filter "label=portical.upnp.forward" --format '{{.Names}}' | while read container; do
+    ip=$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "$container")
+    labels=$(docker inspect -f '{{.Config.Labels}}' "$container")
+    extract_rule "${labels}"
+
+    echo ""
+    echo "Container: $container, IP: $ip, External Port: $external_port, Internal Port: $internal_port, Protocol: ${protocol:-tcp+udp}"
+
+    if [[ $protocol == "" ]]; then
+      forward $external_port $ip $internal_port TCP $container
+      forward $external_port $ip $internal_port UDP $container
+    else
+      forward $external_port $ip $internal_port $protocol $container
+    fi
+  done
+}
+
+command="${1-find}"
+set +e; shift;
+$command "$@"
