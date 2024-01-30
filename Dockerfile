@@ -2,7 +2,7 @@ FROM docker:latest
 
 RUN apk update &&  \
     apk upgrade &&  \
-    apk add miniupnpc bash getopt
+    apk add miniupnpc bash
 
 COPY run /opt/portical/
 
