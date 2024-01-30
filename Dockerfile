@@ -2,8 +2,8 @@ FROM docker:latest
 
 RUN apk update &&  \
     apk upgrade &&  \
-    apk add miniupnpc
+    apk add miniupnpc bash getopt
 
-COPY run /run
-RUN chmod u+x ./run
+COPY run /opt/portical/
 
+CMD ["/opt/portical/run", "poll"]
