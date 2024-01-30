@@ -1,6 +1,16 @@
 #!/usr/bin/env bash
 
-ROOT_DEVICE="http://10.0.0.1:5000/rootDesc.xml"
+root="http://10.0.0.1:5000/rootDesc.xml"
+label="portical.upnp.forward"
+verbose=0  # 0 for silent, 1 for verbose
+
+function run_cmd() {
+    if [[ $verbose -eq 1 ]]; then
+        "$@"  # Execute the command normally
+    else
+        "$@" > /dev/null 2>&1  # Discard both stdout and stderr
+    fi
+}
 
 function forward() {
   local network_driver=$1
@@ -8,30 +18,42 @@ function forward() {
   local internal_port=$3
   local protocol=$4
   local machine=$5
-  local description="Portical ${protocol} ${external_port} -> ${machine}:${internal_port}"
+  local description="portical rule: ${protocol} ${external_port} -> ${machine}:${internal_port}"
+
+  echo "Setting up ${description}..."
 
   case $network_driver in
-
     macvlan | ipvlan)
-      echo "Run upnpc from container network so that internet gateway does not block it"
-      docker run --rm --network container:${machine} danielbodart/portical \
-        upnpc -u "${ROOT_DEVICE}" -e "${description}" -r "${internal_port}" "${external_port}" "${protocol}"
+      local network="container:${machine}"
       ;;
 
     host | bridge)
-      echo "Run upnpc from container network so that internet gateway does not block it"
-      upnpc -u "${ROOT_DEVICE}" -e "${description}" -r "${internal_port}" "${external_port}" "${protocol}"
+      local network="host"
       ;;
 
     *)
       echo "Unsupported network driver: ${network_driver}. Skipping..."
+      return
       ;;
   esac
 
+  echo -n "Removing existing rule (if exists)... "
+  run_cmd docker run --rm --network ${network} danielbodart/portical \
+    upnpc -u "${root}" -d "${external_port}" "${protocol}"
+  echo "DONE"
+
+  echo -n "Adding new rule... "
+  run_cmd docker run --rm --network ${network} danielbodart/portical \
+    upnpc -u "${root}" -e "${description}" -r "${internal_port}" "${external_port}" "${protocol}"
+  echo "DONE"
+
 }
 
+
 function extract_rule() {
-  if [[ $1 =~ portical\.upnp\.forward:([0-9]+):([0-9]+)(/(tcp|udp))? ]]; then
+  local regex="${label//./\\.}:([0-9]+):([0-9]+)(/(tcp|udp))?"
+
+  if [[ $1 =~ $regex ]]; then
       external_port="${BASH_REMATCH[1]}"
       internal_port="${BASH_REMATCH[2]}"
       protocol="${BASH_REMATCH[4]}"
@@ -39,15 +61,13 @@ function extract_rule() {
 }
 
 function find() {
-  docker ps --filter "label=portical.upnp.forward" --format '{{.Names}}' | while read container; do
+  echo "Finding all containers with Portical upnp rule set..."
+  docker ps --filter "label=${label}" --format '{{.Names}}' | while read container; do
     labels=$(docker inspect -f '{{.Config.Labels}}' "$container")
     network_name=$(docker inspect -f '{{range $key, $_ := .NetworkSettings.Networks}}{{ $key }}{{end}}' "$container")
     network_driver=$(docker network inspect -f '{{.Driver}}' "$network_name")
 
     extract_rule "${labels}"
-
-    echo ""
-    echo "Container: $container, Driver: $network_driver, External Port: $external_port, Internal Port: $internal_port, Protocol: ${protocol}"
 
     if [[ $protocol == "" ]]; then
       forward $network_driver $external_port $internal_port tcp $container
@@ -56,6 +76,9 @@ function find() {
       forward $network_driver $external_port $internal_port $protocol $container
     fi
   done
+
+  echo "All portical rules:"
+  upnpc -u "${root}" -l | grep portical
 }
 
 
