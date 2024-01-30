@@ -48,7 +48,7 @@ If autodiscovery does not work, you can specify the UPnP root URL using the `-r`
 docker run --rm -d -v '/var/run/docker.sock:/var/run/docker.sock' danielbodart/portical:latest /opt/portical/run poll 
 ```
 
-```shell
+
 
 ### Docker Compose Setup (Example)
 
