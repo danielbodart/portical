@@ -18,7 +18,7 @@ function forward() {
   local internal_port=$3
   local protocol=$4
   local machine=$5
-  local description="portical rule: ${protocol} ${external_port} -> ${machine}:${internal_port}"
+  local description="portical: ${machine}(${external_port}:${internal_port}/${protocol})"
 
   echo "Setting up ${description}..."
 
@@ -61,7 +61,7 @@ function extract_rule() {
 }
 
 function find() {
-  echo "Finding all containers with Portical upnp rule set..."
+  echo "Finding all containers with label '${label}' set..."
   docker ps --filter "label=${label}" --format '{{.Names}}' | while read container; do
     labels=$(docker inspect -f '{{.Config.Labels}}' "$container")
     network_name=$(docker inspect -f '{{range $key, $_ := .NetworkSettings.Networks}}{{ $key }}{{end}}' "$container")
