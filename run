@@ -3,15 +3,31 @@
 ROOT_DEVICE="http://10.0.0.1:5000/rootDesc.xml"
 
 function forward() {
-  local external_port=$1
-  local internal_host=$2
+  local network_driver=$1
+  local external_port=$2
   local internal_port=$3
   local protocol=$4
   local machine=$5
+  local description="Portical ${protocol} ${external_port} -> ${machine}:${internal_port}"
 
-  echo ""
-  upnpc -u ${ROOT_DEVICE} -e "Portical ${machine} ${protocol} ${external_port} -> ${internal_host}:${internal_port} " \
-    -a ${internal_host} ${internal_port} ${external_port} ${protocol}
+  case $network_driver in
+
+    macvlan | ipvlan)
+      echo "Run upnpc from container network so that internet gateway does not block it"
+      docker run --rm --network container:${machine} danielbodart/portical \
+        upnpc -u "${ROOT_DEVICE}" -e "${description}" -r "${internal_port}" "${external_port}" "${protocol}"
+      ;;
+
+    host | bridge)
+      echo "Run upnpc from container network so that internet gateway does not block it"
+      upnpc -u "${ROOT_DEVICE}" -e "${description}" -r "${internal_port}" "${external_port}" "${protocol}"
+      ;;
+
+    *)
+      echo "Unsupported network driver: ${network_driver}. Skipping..."
+      ;;
+  esac
+
 }
 
 function extract_rule() {
@@ -24,21 +40,24 @@ function extract_rule() {
 
 function find() {
   docker ps --filter "label=portical.upnp.forward" --format '{{.Names}}' | while read container; do
-    ip=$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "$container")
     labels=$(docker inspect -f '{{.Config.Labels}}' "$container")
+    network_name=$(docker inspect -f '{{range $key, $_ := .NetworkSettings.Networks}}{{ $key }}{{end}}' "$container")
+    network_driver=$(docker network inspect -f '{{.Driver}}' "$network_name")
+
     extract_rule "${labels}"
 
     echo ""
-    echo "Container: $container, IP: $ip, External Port: $external_port, Internal Port: $internal_port, Protocol: ${protocol:-tcp+udp}"
+    echo "Container: $container, Driver: $network_driver, External Port: $external_port, Internal Port: $internal_port, Protocol: ${protocol}"
 
     if [[ $protocol == "" ]]; then
-      forward $external_port $ip $internal_port TCP $container
-      forward $external_port $ip $internal_port UDP $container
+      forward $network_driver $external_port $internal_port tcp $container
+      forward $network_driver $external_port $internal_port udp $container
     else
-      forward $external_port $ip $internal_port $protocol $container
+      forward $network_driver $external_port $internal_port $protocol $container
     fi
   done
 }
+
 
 command="${1-find}"
 set +e; shift;
