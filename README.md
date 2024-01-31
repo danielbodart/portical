@@ -176,10 +176,10 @@ internet gateway to the target container (and you will not be required specify t
 
 ## TODO
 
-* WARNING: Currently, the script will remove and recreate ports on each poll (Fixing as soon as possible!)
-* Add support for automatic port forwarding based on exposed ports of container (only for bridge network driver)
 * Add DockerHub CI build
-* Test more corner cases!
+* Support sigterm/sigkill
+* Add support for automatic port forwarding based on exposed ports of container (only for bridge network driver)
+* Test more corner cases
 
 
 ## Contributing
