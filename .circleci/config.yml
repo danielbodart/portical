@@ -11,9 +11,10 @@ jobs:
       - setup_remote_docker
       - run:
           name: Build and Push application Docker image
-          command:
-            - echo "Docker user:"
-            - echo $DOCKER_USER
+          command: echo "Docker user:"
+      - run:
+          name: "echo environment variables from org-global context"
+          command: echo $MY_ENV_VAR            -
 
 
 workflows:
