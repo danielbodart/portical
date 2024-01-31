@@ -4,7 +4,7 @@
 
 ## Overview
 Portical is a docker container designed to manage UPnP port forwarding rules for Docker containers. 
-It allows users to set up port forwarding based on container labels and supports updating these rules periodically.
+It allows users to set up port forwarding just by setting a single label on their container.
 It was inspired by [Traefik Proxy](https://traefik.io/traefik/) autoconfiguration of HTTP port forwarding rules.
 
 ## Requirements
@@ -15,7 +15,7 @@ It was inspired by [Traefik Proxy](https://traefik.io/traefik/) autoconfiguratio
 There are 2 parts to Portical:
 
 1. Add the `portical.upnp.forward` label and rules (`8080:80` or `8080:80/tcp` etc) to your Docker containers to expose them to the internet.
-2. Run Portical to set up port forwarding rules and keep them up to date.
+2. Run Portical container to set up port forwarding rules and monitor as many containers as you want.
 
 ### Part 1: Adding the `portical.upnp.forward` label
 
