@@ -100,7 +100,7 @@ docker run --rm -v '/var/run/docker.sock:/var/run/docker.sock' \
   -r "http://internal-gateway-ip:5000/somePath.xml" update
 ```
 
-#### Poll and Demonize
+#### Poll and Demonise
 
 ```shell
 docker run --rm -d -v '/var/run/docker.sock:/var/run/docker.sock' \
@@ -109,7 +109,7 @@ docker run --rm -d -v '/var/run/docker.sock:/var/run/docker.sock' \
 
 This will use autodiscovery to find your internet gateway.
 
-#### Poll and Demonize with explicit root URL
+#### Poll and Demonise with explicit root URL
 
 If autodiscovery does not work, you can specify the UPnP root
 URL using the `-r` or `--root` option:
