@@ -38,7 +38,7 @@ services:
     ports: 
       - '8888:80'
     labels:
-      - 'portical.upnp.forward=9999:80'
+      - 'portical.upnp.forward=9999:8888'
 ```
 
 ### Part 2: Running Portical
@@ -78,7 +78,8 @@ URL using the `-r` or `--root` option:
 
 ```shell
 docker run --rm -v '/var/run/docker.sock:/var/run/docker.sock' \
-  danielbodart/portical:latest /opt/portical/run -r "http://internal-gateway-ip:5000/somePath.xml" update
+  danielbodart/portical:latest /opt/portical/run \
+  -r "http://internal-gateway-ip:5000/somePath.xml" update
 ```
 
 #### Poll and Demonize
@@ -97,7 +98,8 @@ URL using the `-r` or `--root` option:
 
 ```shell
 docker run --rm -d -v '/var/run/docker.sock:/var/run/docker.sock' \
-  danielbodart/portical:latest /opt/portical/run -r "http://internal-gateway-ip:5000/somePath.xml" poll
+  danielbodart/portical:latest /opt/portical/run \
+  -r "http://internal-gateway-ip:5000/somePath.xml" poll
 ```
 
 
