@@ -1,0 +1,28 @@
+#!/usr/bin/env bash
+set -x
+
+function login() {
+  echo $DOCKER_ACCESS_TOKEN | docker login -u $DOCKER_USER --password-stdin
+}
+
+function build() {
+  docker build -t danielbodart/portical .
+  docker push danielbodart/portical
+}
+
+function ci() {
+  login
+  build
+}
+
+command="${1-build}"
+shift
+
+if declare -f "$command" > /dev/null; then
+  set +e
+  "$command" "$@"
+else
+  echo "Error: '$command' is not a valid command." >&2
+  exit 1
+fi
+
