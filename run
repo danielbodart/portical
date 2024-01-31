@@ -4,6 +4,7 @@ root=${PORTICAL_UPNP_ROOT_URL}
 duration=${PORTICAL_POLL_INTERVAL-15}
 label="portical.upnp.forward"
 verbose=false
+force=false
 
 while (( "$#" )); do
   case $1 in
@@ -11,6 +12,7 @@ while (( "$#" )); do
     -d | --duration) duration="$2"; shift 2 ;;
     -l | --label) label="$2"; shift 2 ;;
     -v | --verbose) verbose=true; shift ;;
+    -f | --force) force=true; shift ;;
     *) break ;;
   esac
 done
@@ -36,7 +38,7 @@ function forward() {
   local internal_port=$3
   local protocol=$4
   local machine=$5
-  local description="portical: ${machine}(${external_port}:${internal_port}/${protocol})"
+  local description="portical: (${external_port}:${internal_port}/${protocol}) ${machine}"
 
   echo "Setting up ${description}..."
 
@@ -55,9 +57,14 @@ function forward() {
       ;;
   esac
 
-  echo -n "Removing existing rule (if exists)... "
+  if [ "$force" == false  ] && [[ $(upnpc ${root:+-u "$root"} -l) =~ description ]]; then
+    echo "Rule already exists. Skipping..."
+    return
+  fi
+
+  echo -n "Removing existing rule... "
   run_cmd docker run --rm --network ${network} danielbodart/portical \
-    upnpc ${root:+-u "$root"} -d "${external_port}" "${protocol}"
+  upnpc ${root:+-u "$root"} -d "${external_port}" "${protocol}"
   echo "DONE"
 
   echo -n "Adding new rule... "
@@ -95,7 +102,7 @@ function update() {
   done
 
   echo "All portical rules:"
-  upnpc -u "${root}" -l | grep portical
+  upnpc ${root:+-u "$root"} -l | grep portical
 }
 
 function poll() {

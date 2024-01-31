@@ -68,6 +68,7 @@ Next we need to run Portical to set up the port forwarding rules and keep them u
    - `-d`, `--duration [SECONDS]`: Set the polling interval in seconds (default: `15` seconds).
    - `-l`, `--label [LABEL]`: Specify the Docker label to filter containers (default: `portical.upnp.forward`.
    - `-v`, `--verbose`: Enable verbose output.
+   - `-f`, `--force`: Remove existing rules even if they match (will disconnect any active connections).
 
 - **Environment Variables**:
    - `PORTICAL_UPNP_ROOT_URL`: The root URL for the UPnP device.
