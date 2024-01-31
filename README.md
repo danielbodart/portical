@@ -18,6 +18,17 @@ There are 2 parts to Portical:
 2. Run Portical to set up port forwarding rules and keep them up to date.
 
 ### Part 1: Adding the `portical.upnp.forward` label
+
+The label `portical.upnp.forward` is used to specify the port forwarding rules in the following format 
+`${external_port}:${internal_port}/${optional-protocol}`. 
+
+#### Examples
+- `9999:8000/tcp` will forward port `9999` on internet gateway to the docker network's port `8000` using only the TCP protocol.
+- `25565:25565` will forward port `25565` on internet gateway to the docker network's port `25565` using both TCP and UDP protocol.
+- `19132:19132/udp` will forward port `19132` on internet gateway to the docker network's port `19132` using only the UDP protocol.
+
+Lets see what that looks like in practice:
+
 **Docker**:
 
 ```shell
@@ -43,6 +54,8 @@ services:
 
 ### Part 2: Running Portical
 
+Next we need to run Portical to set up the port forwarding rules and keep them up to date.
+
 #### Overview
 
 - **Commands**:
@@ -61,6 +74,10 @@ services:
    - `PORTICAL_POLL_INTERVAL`: Interval in seconds for polling and updating rules (default: 15 seconds).
 
 ### Docker
+
+To get started it is recommended to run Portical with the `update` command to check it can either autodiscover your 
+internet gateway or you can specify the root URL. Auto discovery is the default behaviour but can be very slow, so it may
+be more practical to specify the root URL.
 
 #### Run Once with Autodiscovery (for testing)
 
@@ -141,21 +158,19 @@ services:
 
 
 ## How it Works
-1. **Forwarding Setup**: For each Docker container with the specified label `portical.upnp.forward` and a rule `${external_port}:${internal_port}/${optional-protocol}`, the application sets up port forwarding using UPnP. eg:
-    - `9999:8000/tcp` will forward port `9999` on internet gateway to the docker network's port `8000` using only the TCP protocol.
-    - `25565:25565` will forward port `25565` on internet gateway to the docker network's port `25565` using both TCP and UDP protocol.
-    - `19132:19132/udp` will forward port `19132` on internet gateway to the docker network's port `19132` using only the UDP protocol.
-2. **Network Handling**: Supports different network drivers and configures port forwarding accordingly. Works with:
-    - `bridge` network driver
-    - `host` network driver
-    - `macvlan` network driver
-    - `ipvlan` network driver
 
-It's worth undertsanding that depending on the network driver, how port forwarding works is different. 
-For example, if you are using the `bridge` network driver (the default), traffic will be making a double hop, once from
-the internet gateway to the docker host (controlled by the `portical.upnp.forward` label rule), then from the docker host to 
+The Portical container does the following steps:
+1. Uses Docker's API (via  `/var/run/docker.sock`) to find containers with the specified label `portical.upnp.forward`. 
+2. Determine the network driver / type used (supports `bridge`, `host`, `macvlan` and `ipvlan`).
+3. Connects to the internet gateway from that network (so the gateway allows it) 
+4. Sends UPnp port forwarding rules specified.
+5. Repeat after the specified interval (default `15` seconds).
+
+
+It's worth understanding that depending on the network driver, how port forwarding works is different:
+* For `bridge` network driver (the default), traffic will be making a double hop, once from the internet gateway to the docker interface (controlled by the `portical.upnp.forward` label rule), then from the docker interface to 
 the target container (controlled by the normal docker ports `-p` flag or `ports` yaml option).
-However, if you are using `host`, `macvlan` or `ipvlan` network driver, traffic will only make a single hope from the 
+* For `host`, `macvlan` or `ipvlan` network driver, traffic will only make a single hope from the 
 internet gateway to the target container (and you will not be required specify the `-p` flag or `ports` yaml option).
 
 ## TODO
