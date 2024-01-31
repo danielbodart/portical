@@ -133,7 +133,7 @@ services:
   portical:
     image: 'danielbodart/portical:latest'
     environment:
-      - PORTICAL_UPNP_ROOT_URL="http://internal-gateway-ip:5000/somePath.xml" # Optional
+      - PORTICAL_UPNP_ROOT_URL=http://internal-gateway-ip:5000/somePath.xml # Optional
     volumes:
       - '/var/run/docker.sock:/var/run/docker.sock' # Required
     restart: unless-stopped

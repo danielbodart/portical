@@ -6,8 +6,8 @@ services:
     image: 'danielbodart/portical:latest'
     container_name: portical
     environment:
-        - PORTICAL_UPNP_ROOT_URL="http://10.0.0.1:5000/rootDesc.xml"
+        - PORTICAL_UPNP_ROOT_URL=http://10.0.0.1:5000/rootDesc.xml
     volumes:
       - '/var/run/docker.sock:/var/run/docker.sock'
     restart: unless-stopped
-    network_mode: none
+    network_mode: host
