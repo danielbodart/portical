@@ -172,7 +172,7 @@ It's worth understanding that depending on the network driver, how port forwardi
 * For `bridge` network driver (the default), traffic will be making a double hop, once from the internet gateway to the docker interface (controlled by the `portical.upnp.forward` label rule), then from the docker interface to 
 the target container (controlled by the normal docker ports `-p` flag or `ports` yaml option).
 * For `host`, `macvlan` or `ipvlan` network driver, traffic will only make a single hope from the 
-internet gateway to the target container (and you will not be required specify the `-p` flag or `ports` yaml option).
+internet gateway to the target container (and you will not be required to specify the `-p` flag or `ports` yaml option).
 
 ## TODO
 
