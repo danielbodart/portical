@@ -4,17 +4,17 @@ jobs:
     docker:
       - image: cimg/base:2022.09
         auth:
-          username: $DOCKER_USER
-          password: $DOCKER_ACCESS_TOKEN
+          username: $DOCKERHUB_USERNAME
+          password: $DOCKERHUB_PASSWORD
     steps:
       - checkout
       - setup_remote_docker
       - run:
           name: Build and Push application Docker image
-          command: echo "Docker user:"
-      - run:
-          name: "echo environment variables from org-global context"
-          command: echo $DOCKER_USER            -
+          command: |
+            echo $DOCKERHUB_PASSWORD | docker login -u $DOCKERHUB_USERNAME --password-stdin
+            docker build -t danielbodart/portical:latest .
+            docker push danielbodart/portical:latest
 
 
 workflows:
@@ -23,7 +23,7 @@ workflows:
     jobs:
       - build:
           context:
-            - DockerHub
+            - dockerhub
           filters:
             branches:
               only: master
