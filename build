@@ -2,6 +2,7 @@
 set -x
 
 function login() {
+  echo $DOCKER_USE
   echo $DOCKER_ACCESS_TOKEN | docker login -u $DOCKER_USER --password-stdin
 }
 

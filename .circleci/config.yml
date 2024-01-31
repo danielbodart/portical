@@ -11,13 +11,18 @@ jobs:
       - setup_remote_docker
       - run:
           name: Build and Push application Docker image
-          command: ./build ci
+          command:
+            - echo "Docker user:"
+            - echo $DOCKER_USER
+
 
 workflows:
   version: 2
   build-deploy:
     jobs:
       - build:
+          context:
+            - DockerHub
           filters:
             branches:
               only: master
