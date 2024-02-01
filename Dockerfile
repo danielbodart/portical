@@ -6,5 +6,5 @@ RUN apk update &&  \
 
 COPY run /opt/portical/
 
-ENTRYPOINT ["/bin/sh", "-c"]
+ENTRYPOINT []
 CMD ["/opt/portical/run", "poll"]
