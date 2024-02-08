@@ -82,12 +82,18 @@ function update() {
     network_name=$(docker inspect -f '{{range $key, $_ := .NetworkSettings.Networks}}{{ $key }}{{end}}' "$container")
     network_driver=$(docker network inspect -f '{{.Driver}}' "$network_name")
 
+    if [[ ${label_value} == "published" ]]; then
+      echo -n "Extracting published port for ${container}... "
+      label_value="$(docker inspect --format='{{ range $key, $value := .NetworkSettings.Ports }}{{ range $value }}{{.HostPort}}:{{ $key }}
+{{ end }}{{ end }}' "${container}" | sort | uniq | tr '\n' ',' | sed 's/:[0-9]*//' )"
+    fi
+
     IFS=',' read -ra rules <<< "${label_value}"
 
     for rule in "${rules[@]}"; do
-      if [[ ${rule} =~ ([0-9]+)(:([0-9]+)(\/(tcp|udp))?)? ]]; then
+      if [[ ${rule} =~ ([0-9]+)(:([0-9]+))?(\/(tcp|udp))? ]]; then
           external_port="${BASH_REMATCH[1]}"
-          internal_port="${BASH_REMATCH[3]-${external_port}}"
+          internal_port="${BASH_REMATCH[3]:-${external_port}}"
           protocol="${BASH_REMATCH[5]}"
 
           if [[ $protocol == "" ]]; then
