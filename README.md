@@ -23,7 +23,7 @@ The label `portical.upnp.forward` is used to specify the port forwarding rules i
 `${external_port}:${internal_port}/${optional-protocol}`. 
 
 #### Examples
-- `published` will forward port all ports that have been published on the host. This is useful for containers that use the `host` network driver and reduces duplication.
+- `published` will forward port all ports that have been published on the host. This is useful for containers that use the default `bridge` network driver and reduces duplication.
 - `9999:8000/tcp` will forward port `9999` on internet gateway to the docker network's port `8000` using only the TCP protocol.
 - `25565:25565` will forward port `25565` on internet gateway to the docker network's port `25565` using both TCP and UDP protocol.
 - `19132:19132/udp` will forward port `19132` on internet gateway to the docker network's port `19132` using only the UDP protocol.
