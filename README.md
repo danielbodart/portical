@@ -179,7 +179,6 @@ internet gateway to the target container (and you will not be required to specif
 ## TODO
 
 * Support sigterm/sigkill
-* Add support for automatic port forwarding based on exposed ports of container (only for bridge network driver)
 * Test more corner cases
 
 
