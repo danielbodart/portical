@@ -14,7 +14,7 @@ It was inspired by [Traefik Proxy](https://traefik.io/traefik/) autoconfiguratio
 ## Usage
 There are 2 parts to Portical:
 
-1. Add the `portical.upnp.forward` label and rules (`8080:80` or `8080:80/tcp` etc) to your Docker containers to expose them to the internet.
+1. Add the `portical.upnp.forward` label and rules (`published`, `8080:80/tcp`, `8080:80` or `8080`, `8080/up` etc) to your Docker containers to expose them to the internet.
 2. Run Portical container to set up port forwarding rules and monitor as many containers as you want.
 
 ### Part 1: Adding the `portical.upnp.forward` label
@@ -23,9 +23,11 @@ The label `portical.upnp.forward` is used to specify the port forwarding rules i
 `${external_port}:${internal_port}/${optional-protocol}`. 
 
 #### Examples
+- `published` will forward port all ports that have been published on the host. This is useful for containers that use the `host` network driver and reduces duplication.
 - `9999:8000/tcp` will forward port `9999` on internet gateway to the docker network's port `8000` using only the TCP protocol.
 - `25565:25565` will forward port `25565` on internet gateway to the docker network's port `25565` using both TCP and UDP protocol.
 - `19132:19132/udp` will forward port `19132` on internet gateway to the docker network's port `19132` using only the UDP protocol.
+- `19132/udp,8080/tcp` will forward port two ports UDP port `19132` and TCP port `8080`.
 
 Lets see what that looks like in practice:
 
@@ -146,7 +148,7 @@ services:
     ports: 
       - '25565:25565' # This is the port that will be exposed on the host (when in bridge network mode)
     labels:
-    - 'portical.upnp.forward=25565:25565' # This is the port that will be exposed on your router
+    - 'portical.upnp.forward=published' # This will forward 25565 to 25565 on the container (see ports section)
 
   # This is another service we are going to expose to the internet (for illustration purposes only)
   nginx: 
@@ -154,7 +156,7 @@ services:
     restart: unless-stopped
     network_mode: custom_network # This is a custom network (could be macvlan or ipvlan), notice no ports are needed
     labels:
-      - 'portical.upnp.forward=8000:80/tcp'
+      - 'portical.upnp.forward=8000:80/tcp' # This will forward port 8000 on the internet gateway to port 80 on the container on its custom network
 ```
 
 
