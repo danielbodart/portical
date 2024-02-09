@@ -57,7 +57,7 @@ function forward() {
       ;;
   esac
 
-  if [ "$force" == false  ] && [[ $(upnpc ${root:+-u "$root"} -l) =~ description ]]; then
+  if [ "$force" == false  ] && [[ $(upnpc ${root:+-u "$root"} -l) == *"${description}"* ]]; then
     echo "Rule already exists. Skipping..."
     return
   fi
@@ -83,7 +83,7 @@ function update() {
     network_driver=$(docker network inspect -f '{{.Driver}}' "$network_name")
 
     if [[ ${label_value} == "published" ]]; then
-      echo -n "Extracting published port for ${container}... "
+      echo "Extracting published port for ${container}... "
       label_value="$(docker inspect --format='{{ range $key, $value := .NetworkSettings.Ports }}{{ range $value }}{{.HostPort}}:{{ $key }}
 {{ end }}{{ end }}' "${container}" | sort | uniq | tr '\n' ',' | sed 's/:[0-9]*//' )"
     fi
