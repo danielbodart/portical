@@ -60,12 +60,12 @@ function forward() {
   if [ "$force" == false  ] && [[ $(upnpc ${root:+-u "$root"} -l) == *"${description}"* ]]; then
     echo "Rule already exists. Skipping..."
     return
+  else
+      echo -n "Removing existing rule... "
+      run_cmd docker run --rm --network ${network} danielbodart/portical \
+        upnpc ${root:+-u "$root"} -d "${external_port}" "${protocol}"
+      echo "DONE"
   fi
-
-  echo -n "Removing existing rule... "
-  run_cmd docker run --rm --network ${network} danielbodart/portical \
-  upnpc ${root:+-u "$root"} -d "${external_port}" "${protocol}"
-  echo "DONE"
 
   echo -n "Adding new rule... "
   run_cmd docker run --rm --network ${network} danielbodart/portical \
