@@ -139,7 +139,7 @@ services:
     volumes:
       - '/var/run/docker.sock:/var/run/docker.sock' # Required
     restart: unless-stopped
-    network_mode: none
+    network_mode: host
 
   # This is a service we are going to expose to the internet (for illustration purposes only)
   minecraft_java: 
