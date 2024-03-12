@@ -75,9 +75,9 @@ function forward() {
 }
 
 
-function update() {
-  echo "Finding all containers with label '${label}' set..."
-  docker ps --filter "label=${label}" --format '{{.Names}}' | while read container; do
+function process_container() {
+    local container=$1
+
     label_value=$(docker inspect --format "{{ index .Config.Labels \"${label}\" }}" "$container")
     network_name=$(docker inspect -f '{{range $key, $_ := .NetworkSettings.Networks}}{{ $key }}{{end}}' "$container")
     network_driver=$(docker network inspect -f '{{.Driver}}' "$network_name")
@@ -104,10 +104,25 @@ function update() {
           fi
       fi
     done
-  done
+}
 
-  echo "All portical rules:"
-  upnpc ${root:+-u "$root"} -l | grep portical
+function update() {
+    echo "Finding all containers with label '${label}' set..."
+    docker ps --filter "label=${label}" --format '{{.Names}}' | while read container; do
+        process_container "$container"
+    done
+
+    echo "All portical rules:"
+    upnpc ${root:+-u "$root"} -l | grep portical
+}
+
+function listen() {
+    # Do an initial update just for good measure
+    update
+    echo "Listening for Docker 'start' events with label '${label}'..."
+    docker events --filter "label=${label}" --filter "type=container" --filter "event=start" --format '{{.Actor.Attributes.name}}' | while read container; do
+        process_container "$container"
+    done
 }
 
 function poll() {

@@ -7,4 +7,4 @@ RUN apk update &&  \
 COPY run /opt/portical/
 
 ENTRYPOINT []
-CMD ["/opt/portical/run", "poll"]
+CMD ["/opt/portical/run", "listen"]
