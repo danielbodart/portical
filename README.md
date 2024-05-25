@@ -140,7 +140,8 @@ services:
       - '/var/run/docker.sock:/var/run/docker.sock' # Required
     restart: unless-stopped
     network_mode: host
-    command: "/opt/portical/run poll"
+    command: "/opt/portical/run poll" # Change default "listen" command to "poll". It checks every "${PORTICAL_POLL_INTERVAL}" seconds
+                                      # for running containers with "portical.upnp.forward" label and "renew" the forward
 
   # This is a service we are going to expose to the internet (for illustration purposes only)
   minecraft_java: 
@@ -151,7 +152,7 @@ services:
     labels:
     - 'portical.upnp.forward=published' # This will forward 25565 to 25565 on the container (see ports section)
     depends_on:
-      - portical
+      - portical # Wait for "portical" container to be up and running
 
   # This is another service we are going to expose to the internet (for illustration purposes only)
   nginx: 
@@ -161,7 +162,7 @@ services:
     labels:
       - 'portical.upnp.forward=8000:80/tcp' # This will forward port 8000 on the internet gateway to port 80 on the container on its custom network
     depends_on:
-      - portical
+      - portical # Wait for "portical" container to be up and running
 ```
 
 
