@@ -140,6 +140,7 @@ services:
       - '/var/run/docker.sock:/var/run/docker.sock' # Required
     restart: unless-stopped
     network_mode: host
+    command: "/opt/portical/run poll"
 
   # This is a service we are going to expose to the internet (for illustration purposes only)
   minecraft_java: 
@@ -149,6 +150,8 @@ services:
       - '25565:25565' # This is the port that will be exposed on the host (when in bridge network mode)
     labels:
     - 'portical.upnp.forward=published' # This will forward 25565 to 25565 on the container (see ports section)
+    depends_on:
+      - portical
 
   # This is another service we are going to expose to the internet (for illustration purposes only)
   nginx: 
@@ -157,6 +160,8 @@ services:
     network_mode: custom_network # This is a custom network (could be macvlan or ipvlan), notice no ports are needed
     labels:
       - 'portical.upnp.forward=8000:80/tcp' # This will forward port 8000 on the internet gateway to port 80 on the container on its custom network
+    depends_on:
+      - portical
 ```
 
 
