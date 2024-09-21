@@ -1,8 +1,6 @@
-FROM docker:latest
+FROM --platform=${BUILDPLATFORM} docker:latest
 
-RUN apk update &&  \
-    apk upgrade &&  \
-    apk add miniupnpc bash
+RUN apk add --no-cache --update bash miniupnpc
 
 COPY run /opt/portical/
 
