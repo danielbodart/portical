@@ -26,7 +26,8 @@ function run_cmd() {
     fi
 
     local status=$?
-    if [ $status -ne 0 ]; then
+    # Should we care that upnpc -d fails in the --force logic?
+    if [ $status -ne 0 ] && [ "$8" != "-d" ]; then
         echo "Error: Command '$*' failed with status $status"
         exit $status
     fi
@@ -70,6 +71,7 @@ function forward() {
   echo -n "Adding new rule... "
   run_cmd docker run --rm --network ${network} danielbodart/portical \
     upnpc ${root:+-u "$root"} -e "${description}" -r "${internal_port}" "${external_port}" "${protocol}"
+  touch /dev/shm/lastUpnpUpdate
   echo "DONE"
 
 }
@@ -107,6 +109,8 @@ function process_container() {
 }
 
 function update() {
+    ## I think we need to care about refreshing ports, I'm going with half a day
+    [[ $(date +%s -r /dev/shm/lastUpnpUpdate) -lt $(($(date +%s)-43200)) ]] && force=true
     echo "Finding all containers with label '${label}' set..."
     docker ps --filter "label=${label}" --format '{{.Names}}' | while read container; do
         process_container "$container"
