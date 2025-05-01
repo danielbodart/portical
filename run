@@ -6,6 +6,7 @@ label="portical.upnp.forward"
 verbose=false
 force=false
 
+
 while (( "$#" )); do
   case $1 in
     -r | --root) root="$2"; shift 2 ;;
@@ -17,20 +18,18 @@ while (( "$#" )); do
   esac
 done
 
-
 function run_cmd() {
-    if $verbose; then
-        "$@"
-    else
-        "$@" > /dev/null 2>&1
-    fi
+  if $verbose; then
+    "$@"
+  else
+    "$@" > /dev/null 2>&1
+  fi
 
-    local status=$?
-    # Should we care that upnpc -d fails in the --force logic?
-    if [ $status -ne 0 ] && [ "$8" != "-d" ]; then
-        echo "Error: Command '$*' failed with status $status"
-        exit $status
-    fi
+  local status=$?
+  if [ $status -ne 0 ] && [ "$8" != "-d" ]; then
+    echo "Error: Command '$*' failed with status $status"
+    exit $status
+  fi
 }
 
 function forward() {
@@ -58,14 +57,14 @@ function forward() {
       ;;
   esac
 
-  if [ "$force" == false  ] && [[ $(upnpc ${root:+-u "$root"} -l) == *"${description}"* ]]; then
+if [ "$force" == false  ] && [[ $(upnpc ${root:+-u "$root"} -l) == *"${description}"* ]]; then
     echo "Rule already exists. Skipping..."
     return
   else
-      echo -n "Removing existing rule... "
-      run_cmd docker run --rm --network ${network} danielbodart/portical \
-        upnpc ${root:+-u "$root"} -d "${external_port}" "${protocol}"
-      echo "DONE"
+    echo -n "Removing existing rule... "
+    run_cmd docker run --rm --network ${network} danielbodart/portical \
+      upnpc ${root:+-u "$root"} -d "${external_port}" "${protocol}"
+    echo "DONE"
   fi
 
   echo -n "Adding new rule... "
@@ -76,57 +75,57 @@ function forward() {
 
 }
 
-
 function process_container() {
-    local container=$1
+  local container=$1
 
-    label_value=$(docker inspect --format "{{ index .Config.Labels \"${label}\" }}" "$container")
-    network_name=$(docker inspect -f '{{range $key, $_ := .NetworkSettings.Networks}}{{ $key }}{{end}}' "$container")
-    network_driver=$(docker network inspect -f '{{.Driver}}' "$network_name")
+  label_value=$(docker inspect --format "{{ index .Config.Labels \"${label}\" }}" "$container")
+  network_name=$(docker inspect -f '{{range $key, $_ := .NetworkSettings.Networks}}{{ $key }}{{end}}' "$container")
+  network_driver=$(docker network inspect -f '{{.Driver}}' "$network_name")
 
-    if [[ ${label_value} == "published" ]]; then
-      echo "Extracting published port for ${container}... "
-      label_value="$(docker inspect --format='{{ range $key, $value := .NetworkSettings.Ports }}{{ range $value }}{{.HostPort}}:{{ $key }}
+  if [[ ${label_value} == "published" ]]; then
+    echo "Extracting published port for ${container}... "
+    label_value="$(docker inspect --format='{{ range $key, $value := .NetworkSettings.Ports }}{{ range $value }}{{.HostPort}}:{{ $key }}
 {{ end }}{{ end }}' "${container}" | sort | uniq | tr '\n' ',' | sed 's/:[0-9]*//' )"
-    fi
+  fi
 
-    IFS=',' read -ra rules <<< "${label_value}"
+  IFS=',' read -ra rules <<< "${label_value}"
 
-    for rule in "${rules[@]}"; do
-      if [[ ${rule} =~ ([0-9]+)(:([0-9]+))?(\/(tcp|udp))? ]]; then
-          external_port="${BASH_REMATCH[1]}"
-          internal_port="${BASH_REMATCH[3]:-${external_port}}"
-          protocol="${BASH_REMATCH[5]}"
+  for rule in "${rules[@]}"; do
+    if [[ ${rule} =~ ([0-9]+)(:([0-9]+))?(\/(tcp|udp))? ]]; then
+      external_port="${BASH_REMATCH[1]}"
+      internal_port="${BASH_REMATCH[3]:-${external_port}}"
+      protocol="${BASH_REMATCH[5]}"
 
-          if [[ $protocol == "" ]]; then
-            forward "$network_driver" "$external_port" "$internal_port" tcp "$container"
-            forward "$network_driver" "$external_port" "$internal_port" udp "$container"
-          else
-            forward "$network_driver" "$external_port" "$internal_port" "$protocol" "$container"
-          fi
+      if [[ $protocol == "" ]]; then
+        forward "$network_driver" "$external_port" "$internal_port" tcp "$container"
+        forward "$network_driver" "$external_port" "$internal_port" udp "$container"
+      else
+        forward "$network_driver" "$external_port" "$internal_port" "$protocol" "$container"
       fi
-    done
+    fi
+  done
 }
 
 function update() {
-    ## I think we need to care about refreshing ports, I'm going with half a day
-    [[ $(date +%s -r /dev/shm/lastUpnpUpdate) -lt $(($(date +%s)-43200)) ]] && force=true
-    echo "Finding all containers with label '${label}' set..."
-    docker ps --filter "label=${label}" --format '{{.Names}}' | while read container; do
-        process_container "$container"
-    done
+  ## I think we need to care about refreshing ports, I'm going with half a day
+  [[ $(date +%s -r /dev/shm/lastUpnpUpdate) -lt $(($(date +%s)-43200)) ]] && force=true && firstBoot=true
+  echo "Finding all containers with label '${label}' set..."
+  docker ps --filter "label=${label}" --format '{{.Names}}' | while read container; do
+    process_container "$container"
+  done
+  if [ "$firstBoot" = true ]; then force=false; fi
 
-    echo "All portical rules:"
-    upnpc ${root:+-u "$root"} -l | grep portical
+  echo "All portical rules:"
+  upnpc ${root:+-u "$root"} -l | grep portical
 }
 
 function listen() {
-    # Do an initial update just for good measure
-    update
-    echo "Listening for Docker 'start' events with label '${label}'..."
-    docker events --filter "label=${label}" --filter "type=container" --filter "event=start" --format '{{.Actor.Attributes.name}}' | while read container; do
-        process_container "$container"
-    done
+  # Do an initial update just for good measure
+  update
+  echo "Listening for Docker 'start' events with label '${label}'..."
+  docker events --filter "label=${label}" --filter "type=container" --filter "event=start" --format '{{.Actor.Attributes.name}}' | while read container; do
+    process_container "$container"
+  done
 }
 
 function poll() {
@@ -148,3 +147,4 @@ else
   echo "Error: '$command' is not a valid command." >&2
   exit 1
 fi
+
