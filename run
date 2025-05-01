@@ -3,6 +3,7 @@
 root=${PORTICAL_UPNP_ROOT_URL}
 duration=${PORTICAL_POLL_INTERVAL-15}
 label="portical.upnp.forward"
+firstBoot=false
 verbose=false
 force=false
 
@@ -57,7 +58,7 @@ function forward() {
       ;;
   esac
 
-if [ "$force" == false  ] && [[ $(upnpc ${root:+-u "$root"} -l) == *"${description}"* ]]; then
+  if [ "$force" == false  ] && [[ ${upnpList} == *"${description}"* ]]; then
     echo "Rule already exists. Skipping..."
     return
   else
@@ -107,8 +108,8 @@ function process_container() {
 }
 
 function update() {
-  ## I think we need to care about refreshing ports, I'm going with half a day
   [[ $(date +%s -r /dev/shm/lastUpnpUpdate) -lt $(($(date +%s)-43200)) ]] && force=true && firstBoot=true
+  upnpList=$(upnpc ${root:+-u "$root"} -l)
   echo "Finding all containers with label '${label}' set..."
   docker ps --filter "label=${label}" --format '{{.Names}}' | while read container; do
     process_container "$container"
@@ -129,6 +130,13 @@ function listen() {
 }
 
 function poll() {
+  if [ ! -f /dev/shm/lastUpnpUpdate ]; then
+    echo "###########################################"
+	echo ""
+	echo "Container boot up. Called with 'poll'..."
+	echo ""
+    echo "#########################################"
+  fi
   while true; do
     update
     echo "Sleeping for ${duration} seconds..."
