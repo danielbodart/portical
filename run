@@ -3,7 +3,6 @@
 root=${PORTICAL_UPNP_ROOT_URL}
 duration=${PORTICAL_POLL_INTERVAL-15}
 label="portical.upnp.forward"
-firstBoot=false
 verbose=false
 force=false
 
@@ -108,13 +107,31 @@ function process_container() {
 }
 
 function update() {
-  [[ $(date +%s -r /dev/shm/lastUpnpUpdate) -lt $(($(date +%s)-43200)) ]] && force=true && firstBoot=true
+  if [[ $(date +%s -r /dev/shm/lastUpnpUpdate) -lt $(($(date +%s)-43200)) ]]; then
+    local force=true
+    if [ "$command" = poll ]; then
+      echo ""
+      echo "##########################################"
+      echo ""
+      echo " Container boot up. Called with 'poll'..."
+      echo ""
+      echo "##########################################"
+      echo ""
+    else
+      echo ""
+      echo "###################################################"
+      echo ""
+      echo " It's been a while, force refresh upnp forwards..."
+      echo ""
+      echo "###################################################"
+      echo ""
+    fi
+  fi
   upnpList=$(upnpc ${root:+-u "$root"} -l)
   echo "Finding all containers with label '${label}' set..."
   docker ps --filter "label=${label}" --format '{{.Names}}' | while read container; do
     process_container "$container"
   done
-  if [ "$firstBoot" = true ]; then force=false; fi
 
   echo "All portical rules:"
   upnpc ${root:+-u "$root"} -l | grep portical
@@ -130,13 +147,6 @@ function listen() {
 }
 
 function poll() {
-  if [ ! -f /dev/shm/lastUpnpUpdate ]; then
-    echo "###########################################"
-	echo ""
-	echo "Container boot up. Called with 'poll'..."
-	echo ""
-    echo "#########################################"
-  fi
   while true; do
     update
     echo "Sleeping for ${duration} seconds..."
@@ -155,4 +165,3 @@ else
   echo "Error: '$command' is not a valid command." >&2
   exit 1
 fi
-
