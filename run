@@ -107,9 +107,9 @@ function process_container() {
 }
 
 function update() {
-  if [[ $(date +%s -r /dev/shm/lastUpnpUpdate) -lt $(($(date +%s)-43200)) ]]; then
-    local force=true
+  if [ ! -f /dev/shm/lastUpnpUpdate ]; then
     if [ "$command" = poll ]; then
+      local force=true
       echo ""
       echo "##########################################"
       echo ""
@@ -117,7 +117,10 @@ function update() {
       echo ""
       echo "##########################################"
       echo ""
-    else
+    fi
+  else
+    if [ "$command" = poll ] && [[ $(date +%s -r /dev/shm/lastUpnpUpdate) -lt $(($(date +%s)-43200)) ]]; then
+      local force=true
       echo ""
       echo "###################################################"
       echo ""
