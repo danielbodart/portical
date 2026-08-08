@@ -1,0 +1,17 @@
+{
+  "name": "portical",
+  "version": "2.0.0",
+  "description": "Manage UPnP port forwarding rules for Docker containers, driven by a label",
+  "license": "Apache-2.0",
+  "type": "module",
+  "module": "src/main.ts",
+  "scripts": {
+    "test": "bun test",
+    "start": "bun run src/main.ts",
+    "build": "bun build --compile --minify --sourcemap src/main.ts --outfile dist/portical"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "typescript": "^5"
+  }
+}
