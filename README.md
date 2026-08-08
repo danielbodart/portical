@@ -1,4 +1,4 @@
-![Portical Logo](logo.png)
+![Portical Logo](https://raw.githubusercontent.com/danielbodart/portical/master/logo.png)
 
 # Portical
 

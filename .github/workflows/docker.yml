@@ -63,3 +63,19 @@ jobs:
           tags: danielbodart/portical:latest
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      # Docker Hub has not synced a README from GitHub since Automated Builds
+      # went away, so the page at hub.docker.com sat empty while this file said
+      # everything worth knowing. This pushes it over the API on every release.
+      #
+      # The README's logo is referenced by absolute URL for this reason:
+      # relative paths resolve against GitHub and render as broken images here.
+      - name: Update Docker Hub description
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/master'
+        uses: peter-evans/dockerhub-description@v4
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_PASSWORD }}
+          repository: danielbodart/portical
+          short-description: "Manage UPnP port forwarding rules for Docker containers with a single label"
+          readme-filepath: ./README.md
