@@ -54,6 +54,21 @@ export interface ReconcileOptions {
    * harder to diagnose than a logged conflict.
    */
   readonly steal?: boolean;
+  /**
+   * The addresses this Portical is entitled to forward to.
+   *
+   * Ownership cannot be decided by the description alone. Every Portical on a
+   * network writes the same "portical:" prefix, so a second one - on another
+   * host, or run by hand from a laptop to look at something - sees the first's
+   * rules as its own, finds no container asking for them, and deletes them.
+   * The two then delete each other's rules forever.
+   *
+   * Restricting removals to mappings that point somewhere this instance could
+   * legitimately have sent traffic makes that impossible. An empty set means
+   * manage everything, which is the old behaviour and what --manage-all asks
+   * for.
+   */
+  readonly managedAddresses?: ReadonlySet<string>;
 }
 
 /**
@@ -74,7 +89,14 @@ export function reconcile(
   actual: readonly Mapping[],
   options: ReconcileOptions = {},
 ): Action[] {
-  const { force = false, renewWithin = 0, steal = false } = options;
+  const { force = false, renewWithin = 0, steal = false, managedAddresses } = options;
+
+  /** Ours, and pointing somewhere we could legitimately have sent traffic. */
+  const managed = (mapping: Mapping): boolean =>
+    isOurs(mapping) &&
+    (managedAddresses === undefined ||
+      managedAddresses.size === 0 ||
+      managedAddresses.has(mapping.internalClient));
 
   const existing = new Map(actual.map((mapping) => [identity(mapping), mapping]));
   const wanted = new Set(desired.map((forward) => identity(forward.rule)));
@@ -85,6 +107,19 @@ export function reconcile(
 
     if (!mapping) {
       actions.push({ kind: "add", forward, reason: "no mapping on the gateway" });
+      continue;
+    }
+
+    // Another Portical's rule, on another host. Reported rather than taken:
+    // silently reassigning it would break whatever is running over there, and
+    // the two instances would then fight over the port indefinitely.
+    if (isOurs(mapping) && !managed(mapping)) {
+      actions.push({
+        kind: "conflict",
+        forward,
+        existing: mapping,
+        reason: `already forwarded by another Portical to ${mapping.internalClient}`,
+      });
       continue;
     }
 
@@ -139,7 +174,7 @@ export function reconcile(
   // issue #2 - a stopped container simply stops contributing desired forwards,
   // so its rules fall out here without any need to watch for stop events.
   for (const mapping of actual) {
-    if (isOurs(mapping) && !wanted.has(identity(mapping))) {
+    if (managed(mapping) && !wanted.has(identity(mapping))) {
       actions.push({ kind: "remove", mapping, reason: "no container asks for it" });
     }
   }

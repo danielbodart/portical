@@ -24,6 +24,8 @@ Options:
   -n, --dry-run           Report what would change without changing it
   -f, --force             Rewrite every rule even if it already looks correct
       --steal             Take over a port another tool already forwards
+      --manage-all        Manage every Portical rule, wherever it points.
+                          Only safe with one Portical on the network.
       --cleanup-on-exit   Remove our mappings on shutdown
   -h, --help              Show this message
 
@@ -75,6 +77,7 @@ export function parseArguments(argv: readonly string[], env: Record<string, stri
       case "-n": case "--dry-run": options.dryRun = true; break;
       case "-f": case "--force": options.force = true; break;
       case "--steal": options.steal = true; break;
+      case "--manage-all": options.manageAll = true; break;
       case "--cleanup-on-exit": options.cleanupOnExit = true; break;
       // Accepted and ignored: v1 used it to show upnpc's output, and there is
       // no longer a subprocess whose output could be hidden.

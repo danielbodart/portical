@@ -293,6 +293,84 @@ describe("dry run", () => {
   });
 });
 
+/**
+ * Every Portical writes the same "portical:" prefix, so the description alone
+ * cannot say *which* Portical wrote a rule. Without this, a second instance -
+ * on another host, or run by hand from a laptop - sees the first's rules,
+ * finds no container wanting them, and deletes them. The two then delete each
+ * other's rules forever.
+ *
+ * Found by pointing this at a live gateway: a dry run from a machine with no
+ * labelled containers proposed removing all eight of another host's mappings.
+ */
+describe("another Portical on the network", () => {
+  const elsewhere = () => ({
+    externalPort: 25565,
+    protocol: "tcp" as const,
+    internalClient: "192.168.1.99",
+    description: "portical: (25565:25565/tcp) minecraft",
+  });
+
+  test("has its mappings left alone", async () => {
+    const { docker, router, daemon } = await portical();
+    router.given(elsewhere());
+    docker.running = [];
+
+    await daemon.once();
+
+    expect(router.mappings).toHaveLength(1);
+  });
+
+  test("is not fought over when we want the same port", async () => {
+    const { docker, router, daemon, log } = await portical();
+    router.given(elsewhere());
+    docker.running = [container("mine", { [FORWARD_LABEL]: "25565:25565/tcp" })];
+
+    await daemon.once();
+
+    expect(router.mappings[0]?.internalClient).toBe("192.168.1.99");
+    expect(log.join("\n")).toContain("already forwarded by another Portical to 192.168.1.99");
+  });
+
+  test("does not stop us cleaning up our own", async () => {
+    const { docker, router, daemon } = await portical();
+    router.given(elsewhere());
+    docker.running = [nginx()];
+    await daemon.once();
+
+    docker.running = [];
+    await daemon.once();
+
+    expect(router.mappings.map((m) => m.internalClient)).toEqual(["192.168.1.99"]);
+  });
+
+  test("is managed anyway when explicitly asked", async () => {
+    const { docker, router, daemon } = await portical({}, { manageAll: true });
+    router.given(elsewhere());
+    docker.running = [];
+
+    await daemon.once();
+
+    expect(router.mappings).toEqual([]);
+  });
+
+  // A macvlan container that stops takes its address with it, so the address
+  // has to be remembered from when the mapping was written.
+  test("does not stop us cleaning up a stopped container's own address", async () => {
+    const { docker, router, daemon } = await portical();
+    docker.running = [
+      container("direct", { [FORWARD_LABEL]: "8080/tcp" }, [network("lan", "macvlan", "192.168.1.40")]),
+    ];
+    await daemon.once();
+    expect(router.mappings).toHaveLength(1);
+
+    docker.running = [];
+    await daemon.once();
+
+    expect(router.mappings).toEqual([]);
+  });
+});
+
 describe("cleanup on exit", () => {
   test("removes our mappings and only ours", async () => {
     const { docker, router, daemon } = await portical();
@@ -347,5 +425,54 @@ describe("run", () => {
 
     controller.abort();
     await running;
+  });
+});
+
+describe("summary", () => {
+  test("says when there is nothing to do", async () => {
+    const { docker, daemon, log } = await portical();
+    docker.running = [nginx()];
+    await daemon.once();
+
+    log.length = 0;
+    await daemon.once();
+
+    expect(log).toEqual(["1 rule already correct, nothing to do"]);
+  });
+
+  // A daemon reconciling every 15 seconds should say it has settled once, and
+  // then not repeat itself forever.
+  test("stays quiet while nothing changes", async () => {
+    const { docker, daemon, log } = await portical();
+    docker.running = [nginx()];
+    await daemon.once();
+    await daemon.once();
+
+    log.length = 0;
+    for (let pass = 0; pass < 5; pass++) await daemon.once();
+
+    expect(log).toEqual([]);
+  });
+
+  test("speaks up again when something changes", async () => {
+    const { docker, daemon, log } = await portical();
+    docker.running = [nginx()];
+    await daemon.once();
+    log.length = 0;
+
+    docker.running = [];
+    await daemon.once();
+
+    expect(log).toContain("1 removed, 0 already correct");
+  });
+
+  test("counts a mixed pass", async () => {
+    const { docker, router, daemon, log } = await portical();
+    router.given({ externalPort: 7070, protocol: "tcp", description: "portical: (7070:7070/tcp) gone" });
+    docker.running = [nginx(), container("plex", { [FORWARD_LABEL]: "32400/tcp" })];
+
+    await daemon.once();
+
+    expect(log).toContain("2 added, 1 removed, 0 already correct");
   });
 });

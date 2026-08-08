@@ -18,6 +18,13 @@ export interface Options {
   readonly dryRun: boolean;
   /** Remove our mappings on shutdown, rather than leaving them in place. */
   readonly cleanupOnExit: boolean;
+  /**
+   * Manage every mapping carrying Portical's description, wherever it points.
+   *
+   * Off by default, because it is only safe when there is exactly one Portical
+   * on the network - see managedAddresses in reconcile.
+   */
+  readonly manageAll: boolean;
   /** The Docker host's address on the LAN, for bridge and host networking. */
   readonly hostAddress?: string;
 }
@@ -34,6 +41,7 @@ export const DEFAULTS: Options = {
   steal: false,
   dryRun: false,
   cleanupOnExit: false,
+  manageAll: false,
 };
 
 export type Log = (message: string) => void;
@@ -64,15 +72,47 @@ export class Portical {
    * we failed to fetch would read as "everything stopped" and tear down every
    * live mapping.
    */
+  /**
+   * Addresses this instance may remove mappings for.
+   *
+   * Seeded with our own host address and everything we have written this run,
+   * so a container that stops while we are up is still cleaned up even though
+   * it is no longer around to tell us its address.
+   */
+  private readonly written = new Set<string>();
+
   async once(): Promise<Action[]> {
     const containers = await this.docker.containers(this.options.label);
     const { forwards, warnings } = resolve(containers, this.options);
     for (const warning of warnings) this.log(`Warning: ${warning}`);
 
-    const actions = reconcile(forwards, await this.gateway.mappings(), this.options);
+    const actions = reconcile(forwards, await this.gateway.mappings(), {
+      ...this.options,
+      managedAddresses: this.options.manageAll ? undefined : this.addresses(forwards),
+    });
 
     for (const action of actions) await this.apply(action);
+
+    // Reported only when it changes, so a daemon reconciling every 15 seconds
+    // says something the first time and then stays quiet until it has news.
+    const summary = summarise(actions);
+    if (summary !== this.lastSummary) {
+      this.log(summary);
+      this.lastSummary = summary;
+    }
+
     return actions;
+  }
+
+  private lastSummary?: string;
+
+  private addresses(forwards: readonly { internalClient?: string }[]): ReadonlySet<string> {
+    const addresses = new Set(this.written);
+    if (this.options.hostAddress) addresses.add(this.options.hostAddress);
+    for (const forward of forwards) {
+      if (forward.internalClient) addresses.add(forward.internalClient);
+    }
+    return addresses;
   }
 
   private async apply(action: Action): Promise<void> {
@@ -131,6 +171,10 @@ export class Portical {
             description: describe(forward.rule, forward.container),
             leaseDuration: this.options.leaseDuration,
           });
+
+          // Remembered so this mapping stays ours to clean up after the
+          // container it belongs to has gone and can no longer be asked.
+          this.written.add(internalClient);
         });
         return;
       }
@@ -212,9 +256,38 @@ export class Portical {
    */
   async cleanup(): Promise<void> {
     this.log("Removing Portical's mappings before exit...");
-    const actions = reconcile([], await this.gateway.mappings());
+    const actions = reconcile([], await this.gateway.mappings(), {
+      managedAddresses: this.options.manageAll ? undefined : this.addresses([]),
+    });
     for (const action of actions) await this.apply(action);
   }
+}
+
+/**
+ * One line saying what the pass did.
+ *
+ * "Nothing to do" is worth saying out loud. It is the normal state, and in v1
+ * it was unreachable - every pass rewrote every rule - so seeing it is how you
+ * know the churn is gone.
+ */
+function summarise(actions: readonly Action[]): string {
+  const count = (kind: Action["kind"]) => actions.filter((action) => action.kind === kind).length;
+  const parts = [
+    ["added", count("add")],
+    ["replaced", count("replace")],
+    ["removed", count("remove")],
+    ["in conflict", count("conflict")],
+  ] as const;
+
+  const changes = parts.filter(([, n]) => n > 0).map(([name, n]) => `${n} ${name}`);
+  const correct = count("keep");
+
+  if (changes.length === 0) {
+    return correct === 0
+      ? "No rules to manage"
+      : `${correct} rule${correct === 1 ? "" : "s"} already correct, nothing to do`;
+  }
+  return [...changes, `${correct} already correct`].join(", ");
 }
 
 function port(action: Extract<Action, { forward: unknown }>): string {
