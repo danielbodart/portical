@@ -31,6 +31,17 @@ export interface DesiredForward {
 export type Action =
   | { readonly kind: "add"; readonly forward: DesiredForward; readonly reason: string }
   | { readonly kind: "replace"; readonly forward: DesiredForward; readonly existing: Mapping; readonly reason: string }
+  /**
+   * Extend a mapping's lease without disturbing it.
+   *
+   * Kept apart from `replace` because how it is carried out matters. A rule
+   * that is merely being renewed is rewritten in place with AddPortMapping,
+   * never deleted first: the gateway's redirect only governs *new* flows, so
+   * removing it briefly is invisible to a connection already established -
+   * until the moment someone tries to join, which is when a game server
+   * appears to have gone down for no reason.
+   */
+  | { readonly kind: "renew"; readonly forward: DesiredForward; readonly existing: Mapping; readonly reason: string }
   | { readonly kind: "remove"; readonly mapping: Mapping; readonly reason: string }
   | { readonly kind: "orphan"; readonly mapping: Mapping; readonly reason: string }
   | { readonly kind: "keep"; readonly forward: DesiredForward; readonly mapping: Mapping }
@@ -147,20 +158,23 @@ export function reconcile(
       continue;
     }
 
-    if (force) {
-      actions.push({ kind: "replace", forward, existing: mapping, reason: "forced" });
-      continue;
-    }
-
+    // Drift is the only thing that justifies taking a rule down. Where the
+    // mapping already points at the right place, it is rewritten in place -
+    // there is nothing to move it away from.
     const drift = mismatch(forward, mapping);
     if (drift) {
       actions.push({ kind: "replace", forward, existing: mapping, reason: drift });
       continue;
     }
 
+    if (force) {
+      actions.push({ kind: "renew", forward, existing: mapping, reason: "forced" });
+      continue;
+    }
+
     if (expiring(mapping, renewWithin)) {
       actions.push({
-        kind: "replace",
+        kind: "renew",
         forward,
         existing: mapping,
         reason: `lease expires in ${mapping.leaseDuration}s`,

@@ -511,3 +511,68 @@ describe("a gateway in secure mode", () => {
     expect(log.join("\n")).not.toContain("real conflict");
   });
 });
+
+/**
+ * A gateway's redirect rule governs *new* flows only; established ones are
+ * carried by conntrack. So deleting a rule to re-add it is invisible to
+ * everyone already connected, and a closed door to anyone arriving in that
+ * window - which on a game server looks like the server going down for no
+ * reason, twice a day, for no visible cause.
+ */
+describe("renewing a lease", () => {
+  async function expiring() {
+    const harness = await portical({ leaseLimit: 600 }, { renewWithin: 3600 });
+    harness.docker.running = [nginx()];
+    await harness.daemon.once();
+    harness.router.actions.length = 0;
+    return harness;
+  }
+
+  test("never takes the rule down first", async () => {
+    const { router, daemon } = await expiring();
+    await daemon.once();
+    expect(router.actions).toContain("AddPortMapping");
+    expect(router.actions).not.toContain("DeletePortMapping");
+  });
+
+  test("leaves the mapping in place throughout", async () => {
+    const { router, daemon } = await expiring();
+    await daemon.once();
+    expect(router.mappings).toHaveLength(1);
+    expect(router.mappings[0]?.internalPort).toBe(80);
+  });
+
+  test("says it is renewing rather than replacing", async () => {
+    const { daemon, log } = await expiring();
+    await daemon.once();
+    expect(log.join("\n")).toContain("Renewing 9999:80/tcp for nginx - lease expires in 600s");
+  });
+
+  // Force means "write it again", not "tear it down and build it back".
+  test("force does not take the rule down either", async () => {
+    const { docker, router, daemon } = await portical({}, { force: true });
+    docker.running = [nginx()];
+    await daemon.once();
+    router.actions.length = 0;
+
+    await daemon.once();
+
+    expect(router.actions).toContain("AddPortMapping");
+    expect(router.actions).not.toContain("DeletePortMapping");
+  });
+
+  // Moving a rule to a different internal target is the one case that needs
+  // the delete, because several firmwares refuse to overwrite it otherwise.
+  test("but a rule that must move is still taken down first", async () => {
+    const { docker, router, daemon } = await portical();
+    docker.running = [nginx("9999:80/tcp")];
+    await daemon.once();
+
+    docker.running = [nginx("9999:8080/tcp")];
+    router.actions.length = 0;
+    await daemon.once();
+
+    expect(router.actions).toContain("DeletePortMapping");
+    expect(router.mappings[0]?.internalPort).toBe(8080);
+  });
+});

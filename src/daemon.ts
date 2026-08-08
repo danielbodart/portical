@@ -153,21 +153,26 @@ export class Portical {
       }
 
       case "add":
+      case "renew":
       case "replace": {
         const { forward } = action;
-        this.log(
-          `${action.kind === "add" ? "Adding" : "Replacing"} ${port(action)} for ` +
-            `${forward.container} - ${action.reason}`,
-        );
+        const verb = { add: "Adding", renew: "Renewing", replace: "Replacing" }[action.kind];
+        this.log(`${verb} ${port(action)} for ${forward.container} - ${action.reason}`);
         if (this.options.dryRun) return;
 
         await this.attempt(async () => {
           const gateway = this.gatewayFor(forward);
 
-          // Removed first only when replacing. Several firmwares answer 718
-          // rather than overwriting when the internal address changes, and a
-          // rule that is already correct is never routed through here, so
-          // this cannot become the churn of issue #6.
+          // Removed first only when the mapping points somewhere else, which
+          // is the one case that needs it: several firmwares answer 718 rather
+          // than overwriting when the internal address changes.
+          //
+          // Never for a renewal. AddPortMapping on an unchanged target updates
+          // the lease in place, whereas deleting first leaves the port briefly
+          // unforwarded. Established flows would not notice - they are carried
+          // by conntrack, not by the redirect - but anyone trying to connect in
+          // that window is refused, which on a game server reads as the server
+          // having gone down for no reason.
           if (action.kind === "replace") {
             await gateway.remove(forward.rule.externalPort, forward.rule.protocol);
           }
@@ -347,6 +352,7 @@ function summarise(actions: readonly Action[]): string {
   const count = (kind: Action["kind"]) => actions.filter((action) => action.kind === kind).length;
   const parts = [
     ["added", count("add")],
+    ["renewed", count("renew")],
     ["replaced", count("replace")],
     ["removed", count("remove")],
     ["in conflict", count("conflict")],

@@ -91,10 +91,13 @@ describe("reconcile", () => {
   });
 
   describe("leases", () => {
+    // Renewed, not replaced. The difference is that a renewal is carried out
+    // with AddPortMapping alone, leaving the rule in place throughout - see
+    // the "renew" action in reconcile.ts.
     test("renews one that is about to expire", () => {
       const expiring = ours(rule(8080), "nginx", { leaseDuration: 300 });
       const actions = reconcile([want(rule(8080))], [expiring], { renewWithin: 3600 });
-      expect(kinds(actions)).toEqual(["replace"]);
+      expect(kinds(actions)).toEqual(["renew"]);
       expect(actions[0]).toMatchObject({ reason: "lease expires in 300s" });
     });
 
@@ -138,10 +141,19 @@ describe("reconcile", () => {
     });
   });
 
+  // Rewritten in place rather than taken down and recreated: it already points
+  // where we want it, so there is nothing to move it away from.
   test("force rewrites a rule that is already correct", () => {
     const actions = reconcile([want(rule(8080))], [ours(rule(8080))], { force: true });
-    expect(kinds(actions)).toEqual(["replace"]);
+    expect(kinds(actions)).toEqual(["renew"]);
     expect(actions[0]).toMatchObject({ reason: "forced" });
+  });
+
+  // Drift is the one case that justifies deleting first, because several
+  // firmwares refuse to overwrite a mapping whose internal address changed.
+  test("still replaces a rule that points somewhere else, even under force", () => {
+    const drifted = ours(rule(8080), "nginx", { internalPort: 9090 });
+    expect(kinds(reconcile([want(rule(8080, 80))], [drifted], { force: true }))).toEqual(["replace"]);
   });
 
   test("treats the two protocols on one port as separate mappings", () => {

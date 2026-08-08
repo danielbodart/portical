@@ -165,6 +165,29 @@ Both the Docker event stream and the interval do nothing but ask for another
 comparison, so container changes are picked up immediately and expiring leases are
 still noticed.
 
+### Leases, and why renewal does not interrupt anything
+
+Portical asks for a mapping that never expires, but many gateways refuse and
+substitute a lease of their own — OpenWrt hands out a week, for instance. Portical
+reads the remaining time on every pass and renews a mapping before it runs out.
+
+A renewal rewrites the mapping in place and **never deletes it first**. That
+distinction matters more than it looks. A gateway's redirect governs *new*
+connections only; traffic on an established connection is carried by the router's
+connection tracking, so a rule that vanishes for a moment is invisible to everyone
+already connected — and a closed door to anyone trying to join in that window. A
+delete-then-add renewal on a game server would therefore look like the server
+briefly disappearing, with nothing in any log to explain it.
+
+The one case that does delete first is a rule that has to *move* — a different
+internal port or address — because several firmwares refuse to overwrite a mapping
+whose target changed. `--force` rewrites in place rather than recreating.
+
+If a mapping does expire (because Portical was not running), the same asymmetry
+applies: existing connections carry on until they go idle, while new ones are
+refused. That is worth knowing, because it makes an expired forward look like a
+problem with the service rather than with the forward.
+
 Port forwarding works differently depending on the network driver:
 
 * With `bridge` (the default), traffic takes two hops: gateway to Docker host
