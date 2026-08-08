@@ -2,7 +2,7 @@ import type { DockerClient } from "./docker.ts";
 import { describe } from "./model.ts";
 import { reconcile, type Action } from "./reconcile.ts";
 import { resolve } from "./resolve.ts";
-import type { Gateway } from "./upnp.ts";
+import { UpnpError, type Gateway } from "./upnp.ts";
 
 export interface Options {
   readonly label: string;
@@ -65,14 +65,6 @@ export class Portical {
   ) {}
 
   /**
-   * Bring the gateway into line with the containers, once.
-   *
-   * Container listing failures propagate rather than being logged and skipped.
-   * Removals are derived from absence, so reconciling against a container list
-   * we failed to fetch would read as "everything stopped" and tear down every
-   * live mapping.
-   */
-  /**
    * Addresses this instance may remove mappings for.
    *
    * Seeded with our own host address and everything we have written this run,
@@ -81,6 +73,16 @@ export class Portical {
    */
   private readonly written = new Set<string>();
 
+  private lastSummary?: string;
+
+  /**
+   * Bring the gateway into line with the containers, once.
+   *
+   * Container listing failures propagate rather than being logged and skipped.
+   * Removals are derived from absence, so reconciling against a container list
+   * we failed to fetch would read as "everything stopped" and tear down every
+   * live mapping.
+   */
   async once(): Promise<Action[]> {
     const containers = await this.docker.containers(this.options.label);
     const { forwards, warnings } = resolve(containers, this.options);
@@ -103,8 +105,6 @@ export class Portical {
 
     return actions;
   }
-
-  private lastSummary?: string;
 
   private addresses(forwards: readonly { internalClient?: string }[]): ReadonlySet<string> {
     const addresses = new Set(this.written);
@@ -175,7 +175,7 @@ export class Portical {
           // Remembered so this mapping stays ours to clean up after the
           // container it belongs to has gone and can no longer be asked.
           this.written.add(internalClient);
-        });
+        }, forward.target.kind === "container" ? secureModeHint : undefined);
         return;
       }
     }
@@ -189,11 +189,16 @@ export class Portical {
    * any upnpc failure, which is why a single stale mapping could stop every
    * forward on the host.
    */
-  private async attempt(work: () => Promise<void>): Promise<void> {
+  private async attempt(
+    work: () => Promise<void>,
+    hint?: (error: Error) => string | undefined,
+  ): Promise<void> {
     try {
       await work();
     } catch (error) {
       this.log(`  FAILED: ${(error as Error).message}`);
+      const explanation = hint?.(error as Error);
+      if (explanation) this.log(`  ${explanation}`);
     }
   }
 
@@ -261,6 +266,31 @@ export class Portical {
     });
     for (const action of actions) await this.apply(action);
   }
+}
+
+/**
+ * Explain a refusal that is really about *who asked*, not about the port.
+ *
+ * A macvlan or ipvlan container has its own address on the LAN, so its mapping
+ * names an address that is not the one Portical is asking from. Gateways
+ * running miniupnpd with `secure_mode` enabled - the default on OpenWrt -
+ * refuse exactly that, and say so with 718, which otherwise reads as an
+ * ordinary port collision and sends people hunting for a conflict that is not
+ * there.
+ *
+ * v1 avoided this by running upnpc *inside* the container's network namespace,
+ * so the request genuinely came from that address. Speaking SOAP directly is
+ * what removed the need to launch containers, and it is also what gives this
+ * up, so the trade is stated plainly rather than failing silently.
+ */
+function secureModeHint(error: Error): string | undefined {
+  if (!(error instanceof UpnpError) || ![718, 606, 715].includes(error.code)) return undefined;
+  return (
+    "This rule forwards to the container's own address rather than this host's. " +
+    "Gateways with miniupnpd secure_mode on (the OpenWrt default) only allow a " +
+    "client to map to itself. Either turn secure_mode off, or put the container " +
+    "on a bridge network and forward to a published port instead."
+  );
 }
 
 /**

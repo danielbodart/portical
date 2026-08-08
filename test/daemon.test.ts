@@ -476,3 +476,35 @@ describe("summary", () => {
     expect(log).toContain("2 added, 1 removed, 0 already correct");
   });
 });
+
+/**
+ * miniupnpd's secure_mode - the OpenWrt default - only lets a client map to
+ * its own address. A macvlan container's mapping names the container's
+ * address, not Portical's, so the gateway refuses with 718, which otherwise
+ * reads as an ordinary port collision and sends people hunting for a conflict
+ * that does not exist.
+ */
+describe("a gateway in secure mode", () => {
+  test("explains why a macvlan container's rule was refused", async () => {
+    const { docker, daemon, log } = await portical({ onlyMapsRequester: HOST });
+    docker.running = [
+      container("direct", { [FORWARD_LABEL]: "8080/tcp" }, [network("lan", "macvlan", "192.168.1.40")]),
+    ];
+
+    await daemon.once();
+
+    expect(log.join("\n")).toContain("718");
+    expect(log.join("\n")).toContain("secure_mode");
+  });
+
+  // A bridge container forwards to the host, which *is* the requester, so it
+  // works - and must not be given a misleading explanation.
+  test("says nothing extra about a bridge container that succeeded", async () => {
+    const { docker, daemon, log } = await portical({ onlyMapsRequester: HOST });
+    docker.running = [nginx()];
+
+    await daemon.once();
+
+    expect(log.join("\n")).not.toContain("secure_mode");
+  });
+});
