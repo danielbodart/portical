@@ -144,7 +144,7 @@ function describeTarget(
   // gateway forwards straight to it and we know the address from Docker.
   if (network.driver === "macvlan" || network.driver === "ipvlan") {
     return {
-      target: { kind: "container", container: network.name },
+      target: { kind: "container", network: network.name },
       internalClient: network.ipAddress === "" ? undefined : network.ipAddress,
     };
   }

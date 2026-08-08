@@ -250,7 +250,7 @@ describe("failure", () => {
   // v1 exited the process on any upnpc failure, so one rule the router would
   // not accept stopped every other forward on the host.
   test("one rule the router refuses does not stop the others", async () => {
-    const { docker, router, daemon, log } = await portical({ onlyMapsRequester: HOST });
+    const { docker, router, daemon, log } = await portical({ secureMode: true });
     docker.running = [
       container("direct", { [FORWARD_LABEL]: "80/tcp" }, [network("lan", "macvlan", "192.168.1.40")]),
       nginx(),
@@ -486,7 +486,7 @@ describe("summary", () => {
  */
 describe("a gateway in secure mode", () => {
   test("explains why a macvlan container's rule was refused", async () => {
-    const { docker, daemon, log } = await portical({ onlyMapsRequester: HOST });
+    const { docker, daemon, log } = await portical({ secureMode: true });
     docker.running = [
       container("direct", { [FORWARD_LABEL]: "8080/tcp" }, [network("lan", "macvlan", "192.168.1.40")]),
     ];
@@ -500,7 +500,7 @@ describe("a gateway in secure mode", () => {
   // A bridge container forwards to the host, which *is* the requester, so it
   // works - and must not be given a misleading explanation.
   test("says nothing extra about a bridge container that succeeded", async () => {
-    const { docker, daemon, log } = await portical({ onlyMapsRequester: HOST });
+    const { docker, daemon, log } = await portical({ secureMode: true });
     docker.running = [nginx()];
 
     await daemon.once();

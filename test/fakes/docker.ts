@@ -11,6 +11,12 @@ export class FakeDocker implements DockerClient {
   running: Container[] = [];
   /** Set to make listing fail, as a Docker restart would. */
   failWith?: Error;
+  /** Every relay container Portical asked for, in order. */
+  readonly relayed: RelayCall[] = [];
+  /** Answers relay requests. Set by tests that exercise the namespace path. */
+  relay?: (call: RelayCall) => string | Promise<string>;
+  /** What imageOf reports, keyed by container. */
+  images: Record<string, string> = {};
 
   private waiting: ((event: DockerEvent) => void)[] = [];
   private queue: DockerEvent[] = [];
@@ -31,6 +37,17 @@ export class FakeDocker implements DockerClient {
       if (!next) return;
       yield next;
     }
+  }
+
+  async runInNetworkOf(container: string, image: string, command: string[]): Promise<string> {
+    const call = { container, image, command };
+    this.relayed.push(call);
+    if (!this.relay) throw new Error(`no relay configured for ${container}`);
+    return this.relay(call);
+  }
+
+  async imageOf(container: string): Promise<string | undefined> {
+    return this.images[container];
   }
 
   start(container: Container): void {
@@ -61,4 +78,11 @@ export function container(
 
 export function network(name: string, driver: string, ipAddress = ""): ContainerNetwork {
   return { name, driver, ipAddress };
+}
+
+/** Records relay requests so tests can assert Portical asked from the right place. */
+export interface RelayCall {
+  readonly container: string;
+  readonly image: string;
+  readonly command: string[];
 }

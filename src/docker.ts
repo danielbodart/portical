@@ -39,6 +39,17 @@ export interface DockerEvent {
 export interface DockerClient {
   containers(label: string): Promise<Container[]>;
   events(label: string, signal: AbortSignal): AsyncIterable<DockerEvent>;
+  /**
+   * Run an image in another container's network namespace and return what it
+   * printed.
+   *
+   * The one Docker operation that writes rather than reads, and the only
+   * reason Portical still needs more than read access to the socket. Used to
+   * reach the gateway *as* a macvlan container - see relay.ts.
+   */
+  runInNetworkOf(container: string, image: string, command: string[]): Promise<string>;
+  /** The image a container was created from. */
+  imageOf(container: string): Promise<string | undefined>;
 }
 
 /** Engine API version. 1.41 ships with Docker 20.10, old enough to be safe. */
@@ -98,6 +109,56 @@ export class HttpDockerClient implements DockerClient {
         container: raw.Actor?.Attributes?.name ?? raw.id ?? "",
       };
     }
+  }
+
+  async runInNetworkOf(container: string, image: string, command: string[]): Promise<string> {
+    // Tty gives back a single raw stream rather than Docker's multiplexed
+    // stdout/stderr framing, which is one less thing to decode for output we
+    // are going to search for a marker anyway.
+    const created = (await this.post(`/${API}/containers/create`, {
+      Image: image,
+      Cmd: command,
+      Tty: true,
+      HostConfig: { NetworkMode: `container:${container}`, AutoRemove: false },
+    }).then((response) => response.json())) as { Id: string };
+
+    try {
+      await this.post(`/${API}/containers/${created.Id}/start`, undefined);
+      await this.post(`/${API}/containers/${created.Id}/wait`, undefined);
+      return await this.get(`/${API}/containers/${created.Id}/logs?stdout=1&stderr=1`)
+        .then((response) => response.text());
+    } finally {
+      // Removed here rather than with AutoRemove, which would take the
+      // container away before its output could be read.
+      await this.delete(`/${API}/containers/${created.Id}?force=1&v=1`).catch(() => {});
+    }
+  }
+
+  async imageOf(container: string): Promise<string | undefined> {
+    const inspected = (await this.get(`/${API}/containers/${container}/json`).then((response) =>
+      response.json(),
+    )) as { Config?: { Image?: string } };
+    return inspected.Config?.Image;
+  }
+
+  private async post(path: string, body: unknown): Promise<Response> {
+    try {
+      return await ok(
+        await this.handler(
+          new Request(`http://docker${path}`, {
+            method: "POST",
+            headers: body === undefined ? {} : { "Content-Type": "application/json" },
+            body: body === undefined ? undefined : JSON.stringify(body),
+          }),
+        ),
+      );
+    } catch (cause) {
+      throw new Error(`Docker API ${path} failed: ${(cause as Error).message}`, { cause });
+    }
+  }
+
+  private async delete(path: string): Promise<Response> {
+    return ok(await this.handler(new Request(`http://docker${path}`, { method: "DELETE" })));
   }
 }
 

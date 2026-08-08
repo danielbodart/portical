@@ -17,8 +17,13 @@ export interface Quirks {
   readonly leaseLimit?: number;
   /** Report the end of the mapping table with this code instead of 713. */
   readonly endOfTableCode?: number;
-  /** Refuse to map to an address other than the one that asked. */
-  readonly onlyMapsRequester?: string;
+  /**
+   * Only allow a mapping that points at the address the request came from.
+   *
+   * This is miniupnpd's secure_mode, which is on by default on OpenWrt. It is
+   * why a macvlan container's rule cannot be created from the host.
+   */
+  readonly secureMode?: boolean;
   /** Refuse AddPortMapping outright, as an unauthorised client would see. */
   readonly refuseWith?: number;
 }
@@ -50,21 +55,35 @@ export class FakeGateway {
   constructor(
     private readonly quirks: Quirks = {},
     readonly rootUrl = "http://192.168.1.1:5000/rootDesc.xml",
+    /** The address requests appear to come from unless told otherwise. */
+    readonly host = "192.168.1.5",
   ) {}
 
-  readonly handler: Handler = async (request) => {
-    const url = new URL(request.url);
+  /** The gateway as seen from the Docker host. */
+  readonly handler: Handler = (request) => this.handlerFrom(this.host)(request);
 
-    if (request.method === "GET" && url.pathname === "/rootDesc.xml") {
-      return xml(this.description());
-    }
+  /**
+   * The gateway as seen from some other address on the LAN.
+   *
+   * Used to stand in for a request relayed through a container's network
+   * namespace, which is the whole point of the exercise: the request is
+   * identical, but it arrives from the container's own address.
+   */
+  handlerFrom(requester: string): Handler {
+    return async (request) => {
+      const url = new URL(request.url);
 
-    if (request.method === "POST" && url.pathname === "/ctl/IPConn") {
-      return this.soap(await request.text());
-    }
+      if (request.method === "GET" && url.pathname === "/rootDesc.xml") {
+        return xml(this.description());
+      }
 
-    return new Response("Not Found", { status: 404 });
-  };
+      if (request.method === "POST" && url.pathname === "/ctl/IPConn") {
+        return this.soap(await request.text(), requester);
+      }
+
+      return new Response("Not Found", { status: 404 });
+    };
+  }
 
   /** Put a mapping in place without going through the gateway's own API. */
   given(mapping: Partial<Mapping> & Pick<Mapping, "externalPort" | "protocol">): this {
@@ -105,13 +124,13 @@ export class FakeGateway {
 </root>`;
   }
 
-  private soap(body: string): Response {
+  private soap(body: string, requester: string): Response {
     const action = /<(?:\w+:)?(\w+) xmlns:u=/.exec(body)?.[1] ?? "";
     this.actions.push(action);
 
     switch (action) {
       case "GetGenericPortMappingEntry": return this.entry(Number(text(body, "NewPortMappingIndex")));
-      case "AddPortMapping": return this.add(body);
+      case "AddPortMapping": return this.add(body, requester);
       case "DeletePortMapping": return this.remove(body);
       case "GetExternalIPAddress":
         return xml(envelope("GetExternalIPAddressResponse", { NewExternalIPAddress: this.externalIp }));
@@ -139,13 +158,13 @@ export class FakeGateway {
     );
   }
 
-  private add(body: string): Response {
+  private add(body: string, requester: string): Response {
     if (this.quirks.refuseWith) {
       return fault(this.quirks.refuseWith, FAULTS[this.quirks.refuseWith] ?? "Action Failed");
     }
 
     const internalClient = text(body, "NewInternalClient") ?? "";
-    if (this.quirks.onlyMapsRequester && internalClient !== this.quirks.onlyMapsRequester) {
+    if (this.quirks.secureMode && internalClient !== requester) {
       return fault(718, FAULTS[718]!);
     }
 

@@ -1,6 +1,6 @@
 import type { DockerClient } from "./docker.ts";
 import { describe } from "./model.ts";
-import { reconcile, type Action } from "./reconcile.ts";
+import { reconcile, type Action, type DesiredForward } from "./reconcile.ts";
 import { resolve } from "./resolve.ts";
 import { UpnpError, type Gateway } from "./upnp.ts";
 
@@ -62,6 +62,13 @@ export class Portical {
     private readonly gateway: Gateway,
     private readonly options: Options,
     private readonly log: Log = console.log,
+    /**
+     * The same gateway, reached from inside a container's network namespace.
+     *
+     * Only used when asking directly has been refused because of the address
+     * the rule points at - see secure_mode in namespace.ts.
+     */
+    private readonly asContainer?: (container: string) => Gateway,
   ) {}
 
   /**
@@ -163,14 +170,25 @@ export class Portical {
             );
           }
 
-          await this.gateway.add({
+          const mapping = {
             externalPort: forward.rule.externalPort,
             protocol: forward.rule.protocol,
             internalPort: forward.rule.internalPort,
             internalClient,
             description: describe(forward.rule, forward.container),
             leaseDuration: this.options.leaseDuration,
-          });
+          };
+
+          try {
+            await this.gateway.add(mapping);
+          } catch (error) {
+            // Refused because of *who asked*, not what was asked for. Ask
+            // again from inside the container, where the source address is
+            // the one the rule names.
+            if (!this.canRetryAsContainer(error, forward)) throw error;
+            this.log(`  Refused; retrying from inside ${forward.container}'s network...`);
+            await this.asContainer!(forward.container).add(mapping);
+          }
 
           // Remembered so this mapping stays ours to clean up after the
           // container it belongs to has gone and can no longer be asked.
@@ -179,6 +197,22 @@ export class Portical {
         return;
       }
     }
+  }
+
+  /**
+   * Whether a refusal is one that asking from inside the container would fix.
+   *
+   * Only for rules that point at a container's own address: a host-targeted
+   * rule already asks from the address it names, so a refusal there means
+   * something else and retrying would only obscure it.
+   */
+  private canRetryAsContainer(error: unknown, forward: DesiredForward): boolean {
+    return (
+      this.asContainer !== undefined &&
+      forward.target.kind === "container" &&
+      error instanceof UpnpError &&
+      [718, 606, 715].includes(error.code)
+    );
   }
 
   /**

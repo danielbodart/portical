@@ -1,4 +1,6 @@
 import { DEFAULTS, Portical, type Options } from "./daemon.ts";
+import { DEFAULT_HELPER_IMAGE, ownImage, viaContainer } from "./namespace.ts";
+import { runRelay } from "./relay.ts";
 import { addressFacing, discover } from "./discovery.ts";
 import { HttpDockerClient } from "./docker.ts";
 import { http, overUnixSocket, withTimeout } from "./http.ts";
@@ -24,6 +26,9 @@ Options:
   -n, --dry-run           Report what would change without changing it
   -f, --force             Rewrite every rule even if it already looks correct
       --steal             Take over a port another tool already forwards
+      --helper-image IMG  Portical's own image, used to reach the gateway from
+                          inside a macvlan container's network. Detected
+                          automatically; only set this if detection fails.
       --manage-all        Manage every Portical rule, wherever it points.
                           Only safe with one Portical on the network.
       --cleanup-on-exit   Remove our mappings on shutdown
@@ -41,16 +46,21 @@ both, so there is nothing left to choose between.
 
 interface Parsed {
   readonly command: string;
+  readonly args: string[];
   readonly options: Options;
   readonly root?: string;
   readonly socket: string;
+  /** Only set when the user named one; otherwise it is detected at runtime. */
+  readonly explicitHelperImage?: string;
   readonly help: boolean;
 }
 
 export function parseArguments(argv: readonly string[], env: Record<string, string | undefined> = {}): Parsed {
   let command = "run";
+  const args: string[] = [];
   let root = env.PORTICAL_UPNP_ROOT_URL;
   let socket = env.DOCKER_SOCKET ?? "/var/run/docker.sock";
+  let explicitHelperImage = env.PORTICAL_HELPER_IMAGE;
   let help = false;
   const options: Record<string, unknown> = {
     ...DEFAULTS,
@@ -74,6 +84,7 @@ export function parseArguments(argv: readonly string[], env: Record<string, stri
       case "--lease": options.leaseDuration = number(value(), argument); break;
       case "--renew-within": options.renewWithin = number(value(), argument); break;
       case "--docker-socket": socket = value(); break;
+      case "--helper-image": explicitHelperImage = value(); break;
       case "-n": case "--dry-run": options.dryRun = true; break;
       case "-f": case "--force": options.force = true; break;
       case "--steal": options.steal = true; break;
@@ -85,11 +96,22 @@ export function parseArguments(argv: readonly string[], env: Record<string, stri
       case "-h": case "--help": help = true; break;
       default:
         if (argument.startsWith("-")) throw new Error(`unknown option '${argument}'`);
-        command = argument;
+        // The first bare word names the command; anything after it belongs to
+        // that command, which is how `relay` receives its payload.
+        if (args.length === 0 && command === "run") command = argument;
+        else args.push(argument);
     }
   }
 
-  return { command, options: options as unknown as Options, root, socket, help };
+  return {
+    command,
+    args,
+    options: options as unknown as Options,
+    root,
+    socket,
+    explicitHelperImage,
+    help,
+  };
 }
 
 function number(value: string, name: string): number {
@@ -135,6 +157,18 @@ export async function main(argv: readonly string[]): Promise<number> {
     return 0;
   }
 
+  // Handled before anything else: relay runs inside a throwaway container that
+  // has no Docker socket and no business discovering a gateway. It performs one
+  // HTTP request from that container's network and prints the result.
+  if (parsed.command === "relay") {
+    const payload = parsed.args[0];
+    if (payload === undefined) {
+      console.error("Error: relay needs a payload. It is used internally by Portical.");
+      return 2;
+    }
+    return runRelay(payload);
+  }
+
   const gateway = await connect(parsed.root);
   console.log(`Using gateway at ${gateway.controlUrl}`);
 
@@ -159,7 +193,22 @@ export async function main(argv: readonly string[]): Promise<number> {
 
   const docker = new HttpDockerClient(overUnixSocket(parsed.socket));
   const options = { ...parsed.options, hostAddress };
-  const portical = new Portical(docker, gateway, options);
+
+  // The same gateway, reached from inside a given container's network. Used
+  // only when a rule pointing at a container's own address is refused because
+  // of where it was asked from - see namespace.ts.
+  //
+  // The relay runs Portical's own image, so an explicit --helper-image is only
+  // needed when we cannot work out what we are running as.
+  const helperImage = parsed.explicitHelperImage ?? (await ownImage(docker)) ?? DEFAULT_HELPER_IMAGE;
+  const asContainer = (container: string) =>
+    new UpnpGateway(
+      viaContainer(docker, container, helperImage),
+      gateway.controlUrl,
+      gateway.serviceType,
+    );
+
+  const portical = new Portical(docker, gateway, options, console.log, asContainer);
 
   if (options.dryRun) console.log("Dry run - nothing will be changed");
 

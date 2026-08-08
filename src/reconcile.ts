@@ -10,7 +10,7 @@ import { identity, isOurs, type Mapping, type Rule } from "./model.ts";
  */
 export type Target =
   | { readonly kind: "host" }
-  | { readonly kind: "container"; readonly container: string };
+  | { readonly kind: "container"; readonly network: string };
 
 /** A rule, resolved against the container it came from. */
 export interface DesiredForward {

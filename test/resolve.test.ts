@@ -93,7 +93,7 @@ describe("resolve", () => {
         { hostAddress: "192.168.1.5" },
       );
       expect(forwards[0]).toMatchObject({
-        target: { kind: "container", container: "lan" },
+        target: { kind: "container", network: "lan" },
         internalClient: "192.168.1.40",
       });
     });
@@ -102,7 +102,7 @@ describe("resolve", () => {
       const { forwards } = resolve([
         container("nginx", { [FORWARD_LABEL]: "80/tcp" }, [net("lan", "ipvlan", "192.168.1.41")]),
       ]);
-      expect(forwards[0]?.target).toEqual({ kind: "container", container: "lan" });
+      expect(forwards[0]?.target).toEqual({ kind: "container", network: "lan" });
     });
 
     test("forwards a host-networked container to the host", () => {
@@ -165,7 +165,7 @@ describe("resolve", () => {
 
     test("prefers the network that reaches the LAN", () => {
       expect(resolve([traefik()]).forwards[0]).toMatchObject({
-        target: { kind: "container", container: "lan" },
+        target: { kind: "container", network: "lan" },
         internalClient: "192.168.1.40",
       });
     });
