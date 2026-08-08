@@ -11,6 +11,13 @@ on:
   pull_request:
   workflow_dispatch:
 
+# Least privilege for the built-in token. Nothing here writes to the
+# repository: the only credential that matters is the Docker Hub one, which
+# comes from secrets. Without this every job inherits whatever the repository
+# default happens to be, which on many repositories is read *and write*.
+permissions:
+  contents: read
+
 jobs:
   test:
     runs-on: ubuntu-latest
