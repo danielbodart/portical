@@ -3,8 +3,8 @@
 # Portical
 
 ## Overview
-Portical is a docker container designed to manage UPnP port forwarding rules for Docker containers. 
-It allows users to set up port forwarding just by setting a single label on their container.
+Portical manages UPnP port forwarding rules for Docker containers.
+Set one label on a container and its ports are forwarded on your internet gateway.
 It was inspired by [Traefik Proxy](https://traefik.io/traefik/) autoconfiguration of HTTP port forwarding rules.
 
 ## Requirements
@@ -14,179 +14,209 @@ It was inspired by [Traefik Proxy](https://traefik.io/traefik/) autoconfiguratio
 ## Usage
 There are 2 parts to Portical:
 
-1. Add the `portical.upnp.forward` label and rules (`published`, `8080:80/tcp`, `8080:80` or `8080`, `8080/up` etc) to your Docker containers to expose them to the internet.
-2. Run Portical container to set up port forwarding rules and monitor as many containers as you want.
+1. Add the `portical.upnp.forward` label and rules (`published`, `8080:80/tcp`, `8080:80` or `8080`, `8080/udp` etc) to your Docker containers to expose them to the internet.
+2. Run Portical to set up the port forwarding rules and keep them that way.
 
 ### Part 1: Adding the `portical.upnp.forward` label
 
-The label `portical.upnp.forward` is used to specify the port forwarding rules in the following format 
-`${external_port}:${internal_port}/${optional-protocol}`. 
+The label `portical.upnp.forward` specifies port forwarding rules in the format
+`${external_port}:${internal_port}/${optional-protocol}`.
 
 #### Examples
-- `published` will forward port all ports that have been published on the host. This is useful for containers that use the default `bridge` network driver and reduces duplication.
-- `9999:8000/tcp` will forward port `9999` on internet gateway to the docker network's port `8000` using only the TCP protocol.
-- `25565:25565` will forward port `25565` on internet gateway to the docker network's port `25565` using both TCP and UDP protocol.
-- `19132:19132/udp` will forward port `19132` on internet gateway to the docker network's port `19132` using only the UDP protocol.
-- `19132/udp,8080/tcp` will forward port two ports UDP port `19132` and TCP port `8080`.
+- `published` forwards every port the container publishes on the host. Useful for the default `bridge` network driver, and avoids repeating yourself.
+- `9999:8000/tcp` forwards port `9999` on the internet gateway to port `8000` using only TCP.
+- `25565:25565` forwards port `25565` using both TCP and UDP.
+- `19132/udp` forwards UDP port `19132`.
+- `19132/udp,8080/tcp` forwards two ports.
+- `published,9999:80/tcp` combines them. Terms compose freely, and an explicit rule wins if it collides with a published one.
 
-Lets see what that looks like in practice:
+A rule that cannot be parsed is reported and skipped, rather than half-understood.
 
 **Docker**:
 
 ```shell
-# Forward port 9999 on your router to port 8888 on the docker host then to port 80 on the container (for illustration purposes)
-docker run nginx:latest \
- --label portical.upnp.forward=9999:8888 
- -p 8888:80
+docker run -d --label portical.upnp.forward=9999:8888 -p 8888:80 nginx:latest
 ```
 
 **Docker Compose**:
 
 ```yaml
-version: '3.8'
-
 services:
-  nginx: 
+  nginx:
     image: 'nginx:latest'
-    ports: 
+    ports:
       - '8888:80'
     labels:
       - 'portical.upnp.forward=9999:8888'
 ```
 
+#### Containers on several networks
+
+If a container is attached to more than one network, Portical forwards to whichever
+one reaches the LAN, preferring `macvlan` and `ipvlan` over `bridge`. To choose
+explicitly, add a second label:
+
+```yaml
+labels:
+  - 'portical.upnp.forward=443/tcp'
+  - 'portical.upnp.network=lan'
+```
+
 ### Part 2: Running Portical
 
-Next we need to run Portical to set up the port forwarding rules and keep them up to date.
+#### Commands
 
-#### Overview
+- `run` (default): reconcile continuously. Reacts to containers starting and stopping, and re-checks on an interval to renew leases and correct drift.
+- `update`: reconcile once and exit.
+- `list`: show the gateway's current port mappings and exit. The quickest way to check Portical can talk to your router.
 
-- **Commands**:
-   - `poll`: Continuously updates port forwarding rules at specified intervals.
-   - `update`: Finds containers with the specified label and sets up port forwarding once only.  (mainly for testing)
-     - Warning UPnP rules expire.
+`poll` and `listen` are accepted as aliases for `run`. In v1 they were different
+things, and neither was complete on its own - see [What changed in v2](#what-changed-in-v2).
 
-- **Options (all optional)**:
-   - `-r`, `--root [URL]`: Set the UPnP root URL. (use if autodiscovery does not work)
-   - `-d`, `--duration [SECONDS]`: Set the polling interval in seconds (default: `15` seconds).
-   - `-l`, `--label [LABEL]`: Specify the Docker label to filter containers (default: `portical.upnp.forward`.
-   - `-v`, `--verbose`: Enable verbose output.
-   - `-f`, `--force`: Remove existing rules even if they match (will disconnect any active connections).
+#### Options
 
-- **Environment Variables**:
-   - `PORTICAL_UPNP_ROOT_URL`: The root URL for the UPnP device.
-   - `PORTICAL_POLL_INTERVAL`: Interval in seconds for polling and updating rules (default: 15 seconds).
+| Option | Description |
+| --- | --- |
+| `-r`, `--root URL` | UPnP root description URL. Skips discovery, and is much faster. |
+| `-d`, `--duration SECONDS` | Seconds between reconcile passes (default `15`). |
+| `-l`, `--label LABEL` | Container label to read (default `portical.upnp.forward`). |
+| `--network-label LABEL` | Label naming which network to forward to (default `portical.upnp.network`). |
+| `--lease SECONDS` | Lease to request; `0` never expires (default `0`). |
+| `--renew-within SECONDS` | Renew a mapping expiring within this (default `43200`). |
+| `--docker-socket PATH` | Docker socket (default `/var/run/docker.sock`). |
+| `-n`, `--dry-run` | Report what would change without changing it. |
+| `-f`, `--force` | Rewrite every rule even if it already looks correct. |
+| `--steal` | Take over an external port another tool already forwards. |
+| `--cleanup-on-exit` | Remove Portical's mappings on shutdown. |
 
-### Docker
+Environment variables: `PORTICAL_UPNP_ROOT_URL` (same as `--root`) and
+`PORTICAL_POLL_INTERVAL` (same as `--duration`).
 
-To get started it is recommended to run Portical with the `update` command to check it can either autodiscover your 
-internet gateway or you can specify the root URL. Auto discovery is the default behaviour but can be very slow, so it may
-be more practical to specify the root URL.
+#### Checking it works
 
-#### Run Once with Autodiscovery (for testing)
-
-```shell
-docker run --rm -v '/var/run/docker.sock:/var/run/docker.sock' \
-  danielbodart/portical:latest /opt/portical/run -v update
-```
-
-This will use autodiscovery to find your internet gateway. 
-
-#### Run Once with explicit root URL
-
-If autodiscovery does not work, you can specify the UPnP root 
-URL using the `-r` or `--root` option:
+Start with `list`, which only reads:
 
 ```shell
-docker run --rm -v '/var/run/docker.sock:/var/run/docker.sock' \
-  danielbodart/portical:latest /opt/portical/run \
-  -r "http://internal-gateway-ip:5000/somePath.xml" update
+docker run --rm --network host danielbodart/portical:latest \
+  -r "http://internal-gateway-ip:5000/rootDesc.xml" list
 ```
 
-#### Poll and Demonise
+Then see what Portical would do, without doing it:
 
 ```shell
-docker run --rm -d -v '/var/run/docker.sock:/var/run/docker.sock' \
-  danielbodart/portical:latest /opt/portical/run poll
+docker run --rm --network host -v '/var/run/docker.sock:/var/run/docker.sock' \
+  danielbodart/portical:latest -r "http://internal-gateway-ip:5000/rootDesc.xml" --dry-run update
 ```
 
-This will use autodiscovery to find your internet gateway.
-
-#### Poll and Demonise with explicit root URL
-
-If autodiscovery does not work, you can specify the UPnP root
-URL using the `-r` or `--root` option:
-
-```shell
-docker run --rm -d -v '/var/run/docker.sock:/var/run/docker.sock' \
-  danielbodart/portical:latest /opt/portical/run \
-  -r "http://internal-gateway-ip:5000/somePath.xml" poll
-```
-
+If you leave out `--root`, Portical searches for a gateway over SSDP. Discovery is
+slow and needs host networking, so setting the root URL is worth the one-off effort.
 
 ### Docker Compose Setup (Recommended)
 
-The ideal solution is to use Docker Compose to run Portical and your other containers in all one place:
-
 ```yaml
-version: '3.8'
-
 services:
 
   portical:
     image: 'danielbodart/portical:latest'
     environment:
-      - PORTICAL_UPNP_ROOT_URL=http://internal-gateway-ip:5000/somePath.xml # Optional
+      - PORTICAL_UPNP_ROOT_URL=http://internal-gateway-ip:5000/rootDesc.xml # Optional
     volumes:
       - '/var/run/docker.sock:/var/run/docker.sock' # Required
     restart: unless-stopped
     network_mode: host
-    command: "/opt/portical/run poll" # Change default "listen" command to "poll". It checks every "${PORTICAL_POLL_INTERVAL}" seconds
-                                      # for running containers with "portical.upnp.forward" label and "renew" the forward
 
-  # This is a service we are going to expose to the internet (for illustration purposes only)
-  minecraft_java: 
+  # A service we are going to expose to the internet
+  minecraft_java:
     image: 'gameservermanagers/gameserver:mc'
     restart: unless-stopped
-    ports: 
-      - '25565:25565' # This is the port that will be exposed on the host (when in bridge network mode)
+    ports:
+      - '25565:25565'
     labels:
-    - 'portical.upnp.forward=published' # This will forward 25565 to 25565 on the container (see ports section)
-    depends_on:
-      - portical # Wait for "portical" container to be up and running
+      - 'portical.upnp.forward=published'
 
-  # This is another service we are going to expose to the internet (for illustration purposes only)
-  nginx: 
+  # Another, on its own address on the LAN, so no published ports are needed
+  nginx:
     image: 'nginx:latest'
     restart: unless-stopped
-    network_mode: custom_network # This is a custom network (could be macvlan or ipvlan), notice no ports are needed
+    networks:
+      - lan
     labels:
-      - 'portical.upnp.forward=8000:80/tcp' # This will forward port 8000 on the internet gateway to port 80 on the container on its custom network
-    depends_on:
-      - portical # Wait for "portical" container to be up and running
+      - 'portical.upnp.forward=8000:80/tcp'
 ```
 
+`depends_on: portical` is no longer needed. Portical reconciles from the current
+state of Docker on every pass, so a container that starts first, or while Portical
+is down, is picked up regardless.
 
 ## How it Works
 
-The Portical container does the following steps:
-1. Uses Docker's API (via  `/var/run/docker.sock`) to find containers with the specified label `portical.upnp.forward`. 
-2. Determine the network driver / type used (supports `bridge`, `host`, `macvlan` and `ipvlan`).
-3. Connects to the internet gateway from that network (so the gateway allows it) 
-4. Sends UPnp port forwarding rules specified.
-5. Repeat after the specified interval (default `15` seconds).
+Portical compares two things and makes the second look like the first:
 
+- **Wanted**: containers carrying the label, and the rules those labels ask for.
+- **Actual**: the mappings currently on the gateway.
 
-It's worth understanding that depending on the network driver, how port forwarding works is different:
-* For `bridge` network driver (the default), traffic will be making a double hop, once from the internet gateway to the docker interface (controlled by the `portical.upnp.forward` label rule), then from the docker interface to 
-the target container (controlled by the normal docker ports `-p` flag or `ports` yaml option).
-* For `host`, `macvlan` or `ipvlan` network driver, traffic will only make a single hope from the 
-internet gateway to the target container (and you will not be required to specify the `-p` flag or `ports` yaml option).
+Anything wanted but missing is added, anything of Portical's that nothing wants any
+more is removed, and anything already correct is *left alone*. Mappings belonging to
+other tools are never touched unless you pass `--steal`.
 
-## TODO
+Both the Docker event stream and the interval do nothing but ask for another
+comparison, so container changes are picked up immediately and expiring leases are
+still noticed.
 
-* Support sigterm/sigkill
-* Test more corner cases
+Port forwarding works differently depending on the network driver:
 
+* With `bridge` (the default), traffic takes two hops: gateway to Docker host
+  (Portical's rule), then host to container (your normal `-p` / `ports`).
+* With `host`, `macvlan` or `ipvlan`, traffic goes straight from the gateway to the
+  container, and no published ports are needed.
+
+## What changed in v2
+
+v2 is a rewrite from Bash to TypeScript running on [Bun](https://bun.sh). It behaves
+the same way, and the label format is unchanged - including rule descriptions, so
+existing rules on your router are recognised and managed rather than duplicated.
+
+- **Rules that already exist are no longer rewritten.** v1 decided whether a rule
+  existed by looking for its description in `upnpc -l` output. Routers truncate and
+  rewrite descriptions, so on many of them every rule looked missing and was deleted
+  and re-added on every pass - dropping live connections each interval, and failing
+  with `code 714` when there was nothing to delete. ([#6](https://github.com/danielbodart/portical/issues/6))
+- **Rules are removed when their container stops.** ([#2](https://github.com/danielbodart/portical/issues/2))
+- **Containers on several networks work.** v1 ran their network names together into
+  one nonsense string and skipped every rule with `Unsupported network driver: `.
+  ([#1](https://github.com/danielbodart/portical/issues/1))
+- **One rule failing no longer stops the rest.** v1 exited the process on any
+  failure, so a single rule the router refused took down every forward on the host.
+- **`listen` and `poll` are one command.** `listen` reacted to containers starting
+  but never renewed a lease or noticed one stopping; `poll` did the reverse. `run`
+  does both.
+- **No dependencies.** v1 shelled out to the `docker` CLI and `upnpc`, and for
+  macvlan networks it ran *itself* in another container's network namespace.
+  Portical now speaks the Docker Engine API and UPnP SOAP directly, so the image is
+  a single binary, and Portical no longer needs to be able to launch containers.
+- **arm64 images**, which matters for the Pi and NAS boxes this tends to run on.
+- **`--dry-run`, `list`, `--steal` and `--cleanup-on-exit`** are new.
+
+Thanks to [@weedy](https://github.com/weedy) for the lease-expiry and
+listing-caching ideas in [#8](https://github.com/danielbodart/portical/pull/8), both
+of which are in v2, and to [@jhenkens](https://github.com/jhenkens), whose
+[Python fork](https://github.com/jhenkens/portical) is worth a look.
+
+## Development
+
+```shell
+mise install     # installs the pinned Bun
+bun install
+bun test
+bun run build    # compiles a standalone binary into dist/
+```
+
+Everything that talks HTTP - the Docker Engine API and the gateway - goes through a
+single `(Request) => Promise<Response>` function type, so the tests replace both
+with in-memory implementations. There is no server, no port and no router involved:
+the fake gateway is a function, and it has switches for the ways real routers
+actually misbehave (truncating descriptions, downgrading leases, ending their
+mapping table with the wrong code). The bugs above have tests written against those.
 
 ## Contributing
 Contributions to Portical are welcome. Please submit your contributions as pull requests on GitHub.

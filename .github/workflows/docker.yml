@@ -12,8 +12,28 @@ on:
   workflow_dispatch:
 
 jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # mise.toml is the one place Bun's version is pinned, for CI and for
+      # anyone working on this locally.
+      - uses: jdx/mise-action@v2
+
+      - run: bun install --frozen-lockfile
+
+      - name: Typecheck
+        run: bunx tsc --noEmit
+
+      - name: Test
+        run: bun test
+
   build:
     runs-on: ubuntu-latest
+    # Nothing is published unless the tests pass. The old pipeline built and
+    # pushed unconditionally, because there were no tests to gate it on.
+    needs: test
     steps:
       - uses: actions/checkout@v4
 
@@ -34,5 +54,12 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: .
+          # arm64 matters more than usual here: Portical runs on the home
+          # network it is forwarding ports for, which is very often a Pi or an
+          # ARM NAS. The CircleCI pipeline only ever built amd64. No QEMU is
+          # involved - Bun cross-compiles, so this costs almost nothing.
+          platforms: linux/amd64,linux/arm64
           push: ${{ github.event_name != 'pull_request' && github.ref == 'refs/heads/master' }}
           tags: danielbodart/portical:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

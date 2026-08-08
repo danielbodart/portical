@@ -1,13 +1,22 @@
-version: '3.8'
-
 services:
 
   portical:
     image: 'danielbodart/portical:latest'
     container_name: portical
     environment:
-        - PORTICAL_UPNP_ROOT_URL=http://10.0.0.1:5000/rootDesc.xml
+      # Optional, but recommended: discovery is slow and needs host networking,
+      # whereas pointing straight at the gateway is immediate.
+      - PORTICAL_UPNP_ROOT_URL=http://10.0.0.1:5000/rootDesc.xml
     volumes:
       - '/var/run/docker.sock:/var/run/docker.sock'
     restart: unless-stopped
     network_mode: host
+
+  # A service to expose to the internet, for illustration.
+  minecraft:
+    image: 'gameservermanagers/gameserver:mc'
+    restart: unless-stopped
+    ports:
+      - '25565:25565'
+    labels:
+      - 'portical.upnp.forward=published'
