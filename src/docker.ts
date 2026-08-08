@@ -115,18 +115,34 @@ export class HttpDockerClient implements DockerClient {
     // Tty gives back a single raw stream rather than Docker's multiplexed
     // stdout/stderr framing, which is one less thing to decode for output we
     // are going to search for a marker anyway.
-    const created = (await this.post(`/${API}/containers/create`, {
-      Image: image,
-      Cmd: command,
-      Tty: true,
-      HostConfig: { NetworkMode: `container:${container}`, AutoRemove: false },
-    }).then((response) => response.json())) as { Id: string };
+    const created = JSON.parse(
+      await this.post(`/${API}/containers/create`, {
+        Image: image,
+        Cmd: command,
+        Tty: true,
+        HostConfig: { NetworkMode: `container:${container}`, AutoRemove: false },
+      }),
+    ) as { Id: string };
 
     try {
-      await this.post(`/${API}/containers/${created.Id}/start`, undefined);
-      await this.post(`/${API}/containers/${created.Id}/wait`, undefined);
-      return await this.get(`/${API}/containers/${created.Id}/logs?stdout=1&stderr=1`)
-        .then((response) => response.text());
+      await this.post(`/${API}/containers/${created.Id}/start`);
+
+      // follow=1 holds the response open until the container exits and its
+      // output has been flushed, so the whole of it is here. Reading the logs
+      // after /wait instead loses a race: /wait returns the moment the process
+      // exits, which can be before its last write has been collected.
+      const output = await this.get(
+        `/${API}/containers/${created.Id}/logs?follow=1&stdout=1&stderr=1`,
+      ).then((response) => response.text());
+
+      const { StatusCode } = JSON.parse(
+        await this.post(`/${API}/containers/${created.Id}/wait`),
+      ) as { StatusCode: number };
+
+      if (StatusCode !== 0) {
+        throw new Error(`${image} exited with status ${StatusCode}: ${output.trim().slice(0, 500)}`);
+      }
+      return output;
     } finally {
       // Removed here rather than with AutoRemove, which would take the
       // container away before its output could be read.
@@ -141,9 +157,18 @@ export class HttpDockerClient implements DockerClient {
     return inspected.Config?.Image;
   }
 
-  private async post(path: string, body: unknown): Promise<Response> {
+  /**
+   * Returns the body text rather than the Response, so that it is always read.
+   *
+   * Bun keeps the connection to the Docker socket alive between requests, and
+   * a response whose body is never consumed leaves that connection out of
+   * step - the *next* request then comes back 200 with an empty body. That is
+   * what made the relay container appear to produce no output: its logs were
+   * fine, but the unread reply to /wait had desynchronised the socket.
+   */
+  private async post(path: string, body?: unknown): Promise<string> {
     try {
-      return await ok(
+      const response = await ok(
         await this.handler(
           new Request(`http://docker${path}`, {
             method: "POST",
@@ -152,13 +177,17 @@ export class HttpDockerClient implements DockerClient {
           }),
         ),
       );
+      return await response.text();
     } catch (cause) {
       throw new Error(`Docker API ${path} failed: ${(cause as Error).message}`, { cause });
     }
   }
 
-  private async delete(path: string): Promise<Response> {
-    return ok(await this.handler(new Request(`http://docker${path}`, { method: "DELETE" })));
+  private async delete(path: string): Promise<void> {
+    const response = await ok(
+      await this.handler(new Request(`http://docker${path}`, { method: "DELETE" })),
+    );
+    await response.text();
   }
 }
 

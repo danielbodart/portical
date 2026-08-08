@@ -485,7 +485,10 @@ describe("summary", () => {
  * that does not exist.
  */
 describe("a gateway in secure mode", () => {
-  test("explains why a macvlan container's rule was refused", async () => {
+  // With no relay wired in, a macvlan rule is asked for from the host and
+  // refused. The message has to say what to check, because "718" alone sends
+  // people hunting for a port conflict that does not exist.
+  test("explains what to check when there is no way to ask as the container", async () => {
     const { docker, daemon, log } = await portical({ secureMode: true });
     docker.running = [
       container("direct", { [FORWARD_LABEL]: "8080/tcp" }, [network("lan", "macvlan", "192.168.1.40")]),
@@ -494,10 +497,10 @@ describe("a gateway in secure mode", () => {
     await daemon.once();
 
     expect(log.join("\n")).toContain("718");
-    expect(log.join("\n")).toContain("secure_mode");
+    expect(log.join("\n")).toContain("real conflict");
   });
 
-  // A bridge container forwards to the host, which *is* the requester, so it
+  // A bridge container forwards to the host, which is the requester, so it
   // works - and must not be given a misleading explanation.
   test("says nothing extra about a bridge container that succeeded", async () => {
     const { docker, daemon, log } = await portical({ secureMode: true });
@@ -505,6 +508,6 @@ describe("a gateway in secure mode", () => {
 
     await daemon.once();
 
-    expect(log.join("\n")).not.toContain("secure_mode");
+    expect(log.join("\n")).not.toContain("real conflict");
   });
 });

@@ -123,14 +123,13 @@ describe("a macvlan container behind a gateway in secure mode", () => {
     return { router, docker, daemon, log };
   }
 
-  test("is forwarded by asking again from inside the container", async () => {
-    const { router, daemon, log } = await harness(true);
+  test("is forwarded by asking from inside the container", async () => {
+    const { router, daemon } = await harness(true);
 
     await daemon.once();
 
     expect(router.mappings).toHaveLength(1);
     expect(router.mappings[0]?.internalClient).toBe(CONTAINER_IP);
-    expect(log.join("\n")).toContain("retrying from inside direct's network");
   });
 
   test("relays through the container it belongs to, not some other one", async () => {
@@ -139,14 +138,26 @@ describe("a macvlan container behind a gateway in secure mode", () => {
     expect(docker.relayed.map((call) => call.container)).toEqual(["direct"]);
   });
 
-  // A gateway that does not enforce secure_mode should never pay for a
-  // container start, which costs several API calls and a process.
-  test("costs nothing extra on a gateway that allows it directly", async () => {
-    const { router, docker, daemon } = await harness();
+  // Decided by the driver, not by trying and reacting to a refusal. 718 also
+  // means a genuine conflict with someone else's mapping, so using it to mean
+  // "wrong vantage point" would start a container to retry something no
+  // vantage point can fix, and would hide the real reason.
+  test("is asked from the container whether or not the gateway insists", async () => {
+    const { router, docker, daemon } = await harness(false);
 
     await daemon.once();
 
-    expect(router.mappings).toHaveLength(1);
+    expect(router.mappings[0]?.internalClient).toBe(CONTAINER_IP);
+    expect(docker.relayed.map((call) => call.container)).toEqual(["direct"]);
+  });
+
+  test("never starts a container for a bridge-networked rule", async () => {
+    const { docker, daemon, router } = await harness(true);
+    docker.running = [container("web", { [FORWARD_LABEL]: "8081/tcp" }, [network("br", "bridge", "172.17.0.9")])];
+
+    await daemon.once();
+
+    expect(router.mappings[0]?.internalClient).toBe(HOST);
     expect(docker.relayed).toEqual([]);
   });
 

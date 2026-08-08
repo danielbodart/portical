@@ -154,12 +154,14 @@ export class Portical {
         if (this.options.dryRun) return;
 
         await this.attempt(async () => {
+          const gateway = this.gatewayFor(forward);
+
           // Removed first only when replacing. Several firmwares answer 718
           // rather than overwriting when the internal address changes, and a
           // rule that is already correct is never routed through here, so
           // this cannot become the churn of issue #6.
           if (action.kind === "replace") {
-            await this.gateway.remove(forward.rule.externalPort, forward.rule.protocol);
+            await gateway.remove(forward.rule.externalPort, forward.rule.protocol);
           }
 
           const internalClient = forward.internalClient ?? this.options.hostAddress;
@@ -179,40 +181,36 @@ export class Portical {
             leaseDuration: this.options.leaseDuration,
           };
 
-          try {
-            await this.gateway.add(mapping);
-          } catch (error) {
-            // Refused because of *who asked*, not what was asked for. Ask
-            // again from inside the container, where the source address is
-            // the one the rule names.
-            if (!this.canRetryAsContainer(error, forward)) throw error;
-            this.log(`  Refused; retrying from inside ${forward.container}'s network...`);
-            await this.asContainer!(forward.container).add(mapping);
-          }
+          await gateway.add(mapping);
 
           // Remembered so this mapping stays ours to clean up after the
           // container it belongs to has gone and can no longer be asked.
           this.written.add(internalClient);
-        }, forward.target.kind === "container" ? secureModeHint : undefined);
+        }, forward.target.kind === "container" ? relayHint : undefined);
         return;
       }
     }
   }
 
   /**
-   * Whether a refusal is one that asking from inside the container would fix.
+   * Which vantage point to ask the gateway from.
    *
-   * Only for rules that point at a container's own address: a host-targeted
-   * rule already asks from the address it names, so a refusal there means
-   * something else and retrying would only obscure it.
+   * Decided by the network driver, which is known up front, rather than by
+   * trying from the host and reacting to a refusal. A rule for a macvlan or
+   * ipvlan container names that container's own address, so the request has to
+   * come from there - gateways running miniupnpd with secure_mode on only
+   * allow a client to map to itself.
+   *
+   * Not inferred from the error code, because the code that comes back is 718
+   * ConflictInMappingEntry, which also means a genuine collision with someone
+   * else's mapping. Treating it as "wrong vantage point" would start a
+   * container to retry a conflict that no vantage point can fix, and would
+   * hide the real reason. The driver says which case this is with certainty.
    */
-  private canRetryAsContainer(error: unknown, forward: DesiredForward): boolean {
-    return (
-      this.asContainer !== undefined &&
-      forward.target.kind === "container" &&
-      error instanceof UpnpError &&
-      [718, 606, 715].includes(error.code)
-    );
+  private gatewayFor(forward: DesiredForward): Gateway {
+    return forward.target.kind === "container" && this.asContainer
+      ? this.asContainer(forward.container)
+      : this.gateway;
   }
 
   /**
@@ -303,27 +301,30 @@ export class Portical {
 }
 
 /**
- * Explain a refusal that is really about *who asked*, not about the port.
+ * Explain a failure that happened while asking as the container.
  *
- * A macvlan or ipvlan container has its own address on the LAN, so its mapping
- * names an address that is not the one Portical is asking from. Gateways
- * running miniupnpd with `secure_mode` enabled - the default on OpenWrt -
- * refuse exactly that, and say so with 718, which otherwise reads as an
- * ordinary port collision and sends people hunting for a conflict that is not
- * there.
+ * A rule for a macvlan or ipvlan container is created by starting a throwaway
+ * container joined to its network - see namespace.ts - so the things that can
+ * go wrong are different from an ordinary request, and none of them are
+ * obvious from the message Docker or the gateway returns.
  *
- * v1 avoided this by running upnpc *inside* the container's network namespace,
- * so the request genuinely came from that address. Speaking SOAP directly is
- * what removed the need to launch containers, and it is also what gives this
- * up, so the trade is stated plainly rather than failing silently.
+ * 718 keeps its plain meaning here. Because the request was already made from
+ * the address the rule names, a conflict really is a conflict rather than the
+ * gateway objecting to who asked.
  */
-function secureModeHint(error: Error): string | undefined {
-  if (!(error instanceof UpnpError) || ![718, 606, 715].includes(error.code)) return undefined;
+function relayHint(error: Error): string | undefined {
+  if (error instanceof UpnpError) {
+    return error.code === 718
+      ? "The gateway says another mapping already claims that external port. " +
+          "Portical asked as the container itself, so this is a real conflict " +
+          "rather than the gateway objecting to who asked."
+      : undefined;
+  }
   return (
-    "This rule forwards to the container's own address rather than this host's. " +
-    "Gateways with miniupnpd secure_mode on (the OpenWrt default) only allow a " +
-    "client to map to itself. Either turn secure_mode off, or put the container " +
-    "on a bridge network and forward to a published port instead."
+    "This rule points at the container's own address, so Portical asks the " +
+    "gateway from inside that container's network by briefly running its own " +
+    "image there. Check the Docker socket is writable and that Portical's " +
+    "image can be pulled on this host, or name it with --helper-image."
   );
 }
 
