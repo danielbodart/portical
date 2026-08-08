@@ -64,18 +64,34 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      # Docker Hub has not synced a README from GitHub since Automated Builds
-      # went away, so the page at hub.docker.com sat empty while this file said
-      # everything worth knowing. This pushes it over the API on every release.
-      #
+  # Docker Hub has not synced a README from GitHub since Automated Builds went
+  # away, so the page at hub.docker.com stayed empty while this repository's
+  # README said everything worth knowing. It has to be pushed over the API.
+  #
+  # Kept in its own job, and allowed to fail, because it is cosmetic: the image
+  # is what a release is, and a description that would not update must not make
+  # a perfectly good publish look broken. A failure is still visible here.
+  #
+  # It needs a credential that can edit the repository, which is *not* the same
+  # as one that can push to it - pushing works with a Read & Write token, while
+  # editing the description is refused with 403 unless the token also carries
+  # delete/admin scope. Hence a separate secret, so the push credential can
+  # stay as narrow as it is.
+  description:
+    runs-on: ubuntu-latest
+    needs: build
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/master'
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
       # The README's logo is referenced by absolute URL for this reason:
-      # relative paths resolve against GitHub and render as broken images here.
+      # relative paths resolve against GitHub and render broken here.
       - name: Update Docker Hub description
-        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/master'
         uses: peter-evans/dockerhub-description@v4
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_PASSWORD }}
+          password: ${{ secrets.DOCKERHUB_DESCRIPTION_TOKEN || secrets.DOCKERHUB_PASSWORD }}
           repository: danielbodart/portical
           short-description: "Manage UPnP port forwarding rules for Docker containers with a single label"
           readme-filepath: ./README.md
