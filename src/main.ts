@@ -3,7 +3,7 @@ import { DEFAULT_HELPER_IMAGE, ownImage, viaContainer } from "./namespace.ts";
 import { runRelay } from "./relay.ts";
 import { addressFacing, discover } from "./discovery.ts";
 import { HttpDockerClient } from "./docker.ts";
-import { http, overUnixSocket, withTimeout } from "./http.ts";
+import { http, overUnixSocket, withTimeout, type Handler } from "./http.ts";
 import { UpnpGateway } from "./upnp.ts";
 
 const USAGE = `portical - UPnP port forwarding for Docker containers, driven by a label
@@ -96,6 +96,13 @@ export function parseArguments(argv: readonly string[], env: Record<string, stri
       case "-h": case "--help": help = true; break;
       default:
         if (argument.startsWith("-")) throw new Error(`unknown option '${argument}'`);
+        // v1 was a shell script invoked by its full path, and its own README
+        // told people to write `command: "/opt/portical/run poll"`. Those
+        // compose files are still out there and must keep working, so a
+        // leading argument that is plainly a path to the old script is
+        // skipped rather than mistaken for a command name. The slash is what
+        // distinguishes it from our own `run` command.
+        if (LEGACY_ENTRYPOINT.test(argument)) break;
         // The first bare word names the command; anything after it belongs to
         // that command, which is how `relay` receives its payload.
         if (args.length === 0 && command === "run") command = argument;
@@ -114,10 +121,44 @@ export function parseArguments(argv: readonly string[], env: Record<string, stri
   };
 }
 
+/** A path to v1's shell script, or to the v2 binary, used as argv[0]. */
+const LEGACY_ENTRYPOINT = /\/(run|portical)$/;
+
 function number(value: string, name: string): number {
   const parsed = Number(value);
   if (!Number.isFinite(parsed) || parsed < 0) throw new Error(`${name} must be a positive number, got '${value}'`);
   return parsed;
+}
+
+/**
+ * The first discovered device that can actually forward a port.
+ *
+ * Every answer is tried, not just the first. SSDP is answered by anything that
+ * speaks it, and a network can easily contain a device that replies to a
+ * search for an InternetGatewayDevice while offering no port forwarding
+ * service at all - a real one was found doing exactly that on the network this
+ * was developed against. Stopping at the first reply made discovery fail with
+ * a working router sitting on the same LAN.
+ */
+export async function firstGatewayAmong(
+  handler: Handler,
+  candidates: readonly string[],
+): Promise<UpnpGateway> {
+  const failures: string[] = [];
+
+  for (const candidate of candidates) {
+    try {
+      return await UpnpGateway.at(handler, candidate);
+    } catch (error) {
+      failures.push(`  ${candidate}: ${(error as Error).message}`);
+    }
+  }
+
+  throw new Error(
+    `found ${candidates.length} UPnP device${candidates.length === 1 ? "" : "s"}, but ` +
+      `none of them forwards ports:\n${failures.join("\n")}\n` +
+      `Set --root or PORTICAL_UPNP_ROOT_URL to name your gateway directly.`,
+  );
 }
 
 /** Find the gateway, by root URL if we were given one and by SSDP if not. */
@@ -136,10 +177,7 @@ async function connect(root: string | undefined) {
     );
   }
 
-  // Several answers usually means one router replying to both searches, but it
-  // can mean two gateways, in which case saying which one we took matters.
-  if (found.length > 1) console.log(`Found ${found.length} gateways, using ${found[0]}`);
-  return UpnpGateway.at(gatewayHttp, found[0]!);
+  return firstGatewayAmong(gatewayHttp, found);
 }
 
 export async function main(argv: readonly string[]): Promise<number> {

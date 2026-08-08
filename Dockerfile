@@ -24,6 +24,12 @@ RUN apk add --no-cache libstdc++ ca-certificates
 
 COPY --from=build /app/portical /usr/local/bin/portical
 
+# v1 was a shell script at this path, and its README told people to write
+# `command: "/opt/portical/run poll"`. Those compose files are still running.
+# The argument parser already ignores a leading path to the old script, and
+# this covers anyone who also overrode the entrypoint to point straight at it.
+RUN mkdir -p /opt/portical && ln -s /usr/local/bin/portical /opt/portical/run
+
 # Portical only reads the Docker socket, so it does not need to be root - but
 # it does need to be in the group that owns the socket. That group id varies by
 # host, so this stays root by default and the compose file shows the override.

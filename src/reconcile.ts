@@ -32,6 +32,7 @@ export type Action =
   | { readonly kind: "add"; readonly forward: DesiredForward; readonly reason: string }
   | { readonly kind: "replace"; readonly forward: DesiredForward; readonly existing: Mapping; readonly reason: string }
   | { readonly kind: "remove"; readonly mapping: Mapping; readonly reason: string }
+  | { readonly kind: "orphan"; readonly mapping: Mapping; readonly reason: string }
   | { readonly kind: "keep"; readonly forward: DesiredForward; readonly mapping: Mapping }
   | { readonly kind: "conflict"; readonly forward: DesiredForward; readonly existing: Mapping; readonly reason: string };
 
@@ -174,9 +175,27 @@ export function reconcile(
   // issue #2 - a stopped container simply stops contributing desired forwards,
   // so its rules fall out here without any need to watch for stop events.
   for (const mapping of actual) {
-    if (managed(mapping) && !wanted.has(identity(mapping))) {
+    if (wanted.has(identity(mapping)) || !isOurs(mapping)) continue;
+
+    if (managed(mapping)) {
       actions.push({ kind: "remove", mapping, reason: "no container asks for it" });
+      continue;
     }
+
+    // Ours by description, but pointing somewhere we could not have sent
+    // traffic. Either another Portical wrote it, or it belonged to a macvlan
+    // container of ours that has since gone and taken its address with it.
+    //
+    // Reported rather than removed, and rather than passed over in silence.
+    // We cannot tell those two cases apart, and deleting on a guess would
+    // break another host's forwarding. Left alone, such a rule is reclaimed
+    // if the container returns to the same address, and expires on its own if
+    // the gateway granted a finite lease - which most do.
+    actions.push({
+      kind: "orphan",
+      mapping,
+      reason: `points at ${mapping.internalClient}, which is not ours to manage`,
+    });
   }
 
   return actions;

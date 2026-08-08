@@ -135,6 +135,14 @@ export class Portical {
         );
         return;
 
+      case "orphan":
+        this.log(
+          `Leaving ${action.mapping.protocol}/${action.mapping.externalPort} alone - ` +
+            `${action.reason}. It will be reclaimed if that container returns, or ` +
+            `expire on its own if the gateway set a lease.`,
+        );
+        return;
+
       case "remove": {
         this.log(`Removing ${action.mapping.protocol}/${action.mapping.externalPort} - ${action.reason}`);
         if (this.options.dryRun) return;
@@ -345,6 +353,8 @@ function summarise(actions: readonly Action[]): string {
   ] as const;
 
   const changes = parts.filter(([, n]) => n > 0).map(([name, n]) => `${n} ${name}`);
+  const orphans = count("orphan");
+  if (orphans > 0) changes.push(`${orphans} left alone`);
   const correct = count("keep");
 
   if (changes.length === 0) {

@@ -87,6 +87,8 @@ things, and neither was complete on its own - see [What changed in v2](#what-cha
 | `-n`, `--dry-run` | Report what would change without changing it. |
 | `-f`, `--force` | Rewrite every rule even if it already looks correct. |
 | `--steal` | Take over an external port another tool already forwards. |
+| `--manage-all` | Manage every Portical rule regardless of where it points. Only safe with one Portical on the network. |
+| `--helper-image IMG` | Portical's own image, used to reach the gateway from inside a macvlan container. Detected automatically. |
 | `--cleanup-on-exit` | Remove Portical's mappings on shutdown. |
 
 Environment variables: `PORTICAL_UPNP_ROOT_URL` (same as `--root`) and
@@ -172,9 +174,19 @@ Port forwarding works differently depending on the network driver:
 
 ## What changed in v2
 
-v2 is a rewrite from Bash to TypeScript running on [Bun](https://bun.sh). It behaves
-the same way, and the label format is unchanged - including rule descriptions, so
-existing rules on your router are recognised and managed rather than duplicated.
+v2 is a rewrite from Bash to TypeScript running on [Bun](https://bun.sh).
+
+**Upgrading needs no changes.** Every v1 flag (`-r`, `-d`, `-l`, `-v`, `-f`), both
+environment variables, and all three commands (`update`, `poll`, `listen`) work as
+before. `-v` is accepted and ignored, there being no subprocess left whose output
+could be hidden. Label syntax is unchanged, and so is the text Portical writes into
+rule descriptions - so rules already on your router are recognised and managed
+rather than duplicated alongside them.
+
+v1 was a shell script run by its full path, and its README suggested
+`command: "/opt/portical/run poll"`. That still works: the path is ignored if it is
+passed as an argument, and it also still exists inside the image. New setups do not
+need it - the image runs Portical by default.
 
 - **Rules that already exist are no longer rewritten.** v1 decided whether a rule
   existed by looking for its description in `upnpc -l` output. Routers truncate and
@@ -195,7 +207,9 @@ existing rules on your router are recognised and managed rather than duplicated.
   Portical now speaks the Docker Engine API and UPnP SOAP directly, so the image is
   a single binary, and Portical no longer needs to be able to launch containers.
 - **arm64 images**, which matters for the Pi and NAS boxes this tends to run on.
-- **`--dry-run`, `list`, `--steal` and `--cleanup-on-exit`** are new.
+- **Discovery tries every reply**, not just the first, so a device that claims to
+  be a gateway but forwards no ports no longer hides a working router.
+- **`--dry-run`, `list`, `--steal`, `--manage-all` and `--cleanup-on-exit`** are new.
 
 Thanks to [@weedy](https://github.com/weedy) for the lease-expiry and
 listing-caching ideas in [#8](https://github.com/danielbodart/portical/pull/8), both
@@ -217,6 +231,38 @@ with in-memory implementations. There is no server, no port and no router involv
 the fake gateway is a function, and it has switches for the ways real routers
 actually misbehave (truncating descriptions, downgrading leases, ending their
 mapping table with the wrong code). The bugs above have tests written against those.
+
+## Shutdown
+
+Portical stops cleanly on `SIGTERM` and `SIGINT`: it stops reconciling, finishes
+the pass it is in, and exits. Existing forwards are **left in place**, because a
+Portical that is restarting should not take down the services it is about to
+forward again. Pass `--cleanup-on-exit` to remove them instead.
+
+`SIGKILL` cannot be caught by any process, so nothing runs on it. Nothing needs
+to: Portical keeps no state of its own and works out what to do by comparing
+containers against the gateway on the next start.
+
+## Limits worth knowing
+
+**A macvlan or ipvlan container's rule is not removed if the container went away
+while Portical was not running.** Portical only removes rules pointing somewhere
+it could have sent traffic, so that two Porticals on one network cannot delete
+each other's rules. A macvlan container takes its address with it when it stops,
+so a Portical that was not running at the time cannot tell that rule from
+another host's - it leaves it alone and says so. Such a rule is reclaimed if the
+container returns to the same address, and expires by itself on any gateway that
+sets a lease. Bridge and host networking are unaffected, and so is the ordinary
+case of a container stopping while Portical is running.
+
+Removing it would mean starting a container that claims that address, and an
+address that is free now may not be free later. Portical will not do that.
+
+**Discovery is a fallback, not the happy path.** Anything can answer an SSDP
+search, including devices that claim to be an internet gateway and forward no
+ports - Portical tries every reply rather than the first because of one such
+device. Some routers do not answer at all. Setting `--root` or
+`PORTICAL_UPNP_ROOT_URL` skips discovery and is faster and more reliable.
 
 ## Contributing
 Contributions to Portical are welcome. Please submit your contributions as pull requests on GitHub.
