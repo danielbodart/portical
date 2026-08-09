@@ -6,9 +6,11 @@
   "type": "module",
   "module": "src/main.ts",
   "scripts": {
-    "test": "bun test",
+    "test": "bun run.ts test",
     "start": "bun run src/main.ts",
-    "build": "bun build --compile --minify --sourcemap src/main.ts --outfile dist/portical"
+    "check": "bun run.ts check",
+    "build": "bun run.ts build",
+    "image": "bun run.ts image"
   },
   "devDependencies": {
     "@types/bun": "latest",

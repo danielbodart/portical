@@ -5,6 +5,7 @@ import { addressFacing, discover } from "./discovery.ts";
 import { HttpDockerClient } from "./docker.ts";
 import { http, overUnixSocket, withTimeout, type Handler } from "./http.ts";
 import { UpnpGateway } from "./upnp.ts";
+import { version } from "./version.ts";
 
 const USAGE = `portical - UPnP port forwarding for Docker containers, driven by a label
 
@@ -32,6 +33,7 @@ Options:
       --manage-all        Manage every Portical rule, wherever it points.
                           Only safe with one Portical on the network.
       --cleanup-on-exit   Remove our mappings on shutdown
+      --version           Show the version and exit
   -h, --help              Show this message
 
 Environment:
@@ -53,6 +55,7 @@ interface Parsed {
   /** Only set when the user named one; otherwise it is detected at runtime. */
   readonly explicitHelperImage?: string;
   readonly help: boolean;
+  readonly showVersion: boolean;
 }
 
 export function parseArguments(argv: readonly string[], env: Record<string, string | undefined> = {}): Parsed {
@@ -62,6 +65,7 @@ export function parseArguments(argv: readonly string[], env: Record<string, stri
   let socket = env.DOCKER_SOCKET ?? "/var/run/docker.sock";
   let explicitHelperImage = env.PORTICAL_HELPER_IMAGE;
   let help = false;
+  let showVersion = false;
   const options: Record<string, unknown> = {
     ...DEFAULTS,
     interval: env.PORTICAL_POLL_INTERVAL ? number(env.PORTICAL_POLL_INTERVAL, "PORTICAL_POLL_INTERVAL") : DEFAULTS.interval,
@@ -91,8 +95,10 @@ export function parseArguments(argv: readonly string[], env: Record<string, stri
       case "--manage-all": options.manageAll = true; break;
       case "--cleanup-on-exit": options.cleanupOnExit = true; break;
       // Accepted and ignored: v1 used it to show upnpc's output, and there is
-      // no longer a subprocess whose output could be hidden.
+      // no longer a subprocess whose output could be hidden. It is also why the
+      // version flag has no short form - -v was spoken for.
       case "-v": case "--verbose": break;
+      case "--version": showVersion = true; break;
       case "-h": case "--help": help = true; break;
       default:
         if (argument.startsWith("-")) throw new Error(`unknown option '${argument}'`);
@@ -118,6 +124,7 @@ export function parseArguments(argv: readonly string[], env: Record<string, stri
     socket,
     explicitHelperImage,
     help,
+    showVersion,
   };
 }
 
@@ -190,6 +197,11 @@ export async function main(argv: readonly string[]): Promise<number> {
     return 2;
   }
 
+  if (parsed.showVersion) {
+    console.log(version);
+    return 0;
+  }
+
   if (parsed.help) {
     console.log(USAGE);
     return 0;
@@ -206,6 +218,11 @@ export async function main(argv: readonly string[]): Promise<number> {
     }
     return runRelay(payload);
   }
+
+  // First line of every run, and after the relay branch so the relay's output
+  // stays exactly the one thing its caller parses. A bug report that starts
+  // with this needs no follow-up question about which build it was.
+  console.log(`Portical ${version}`);
 
   const gateway = await connect(parsed.root);
   console.log(`Using gateway at ${gateway.controlUrl}`);

@@ -62,6 +62,18 @@ describe("parseArguments", () => {
     expect(parsed.options.force).toBe(true);
   });
 
+  // -v is v1's verbose flag and is still accepted and ignored, so the version
+  // flag only has a long form. Asking for one is not asking to run anything.
+  test("asks for the version without naming a command", () => {
+    const parsed = parseArguments(["--version"], {});
+    expect(parsed.showVersion).toBe(true);
+    expect(parsed.command).toBe("run");
+  });
+
+  test("does not mistake -v for it", () => {
+    expect(parseArguments(["-v"], {}).showVersion).toBe(false);
+  });
+
   test("rejects an unknown option rather than ignoring it", () => {
     expect(() => parseArguments(["--nonsense"], {})).toThrow(/unknown option '--nonsense'/);
   });

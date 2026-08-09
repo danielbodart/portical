@@ -11,11 +11,26 @@ RUN bun install --frozen-lockfile
 COPY tsconfig.json ./
 COPY src ./src
 
+# Computed by run.ts from the git history, which is not in the build context -
+# so it is passed in rather than worked out here. A build with no --build-arg
+# still works and says "development", which is the truth about that build.
+ARG VERSION=development
+
 ARG TARGETARCH
 RUN target="bun-linux-$([ "$TARGETARCH" = "arm64" ] && echo arm64 || echo x64)-musl" && \
-    bun build --compile --minify --target="$target" src/main.ts --outfile portical
+    bun build --compile --minify --define "PORTICAL_VERSION=\"$VERSION\"" --target="$target" src/main.ts --outfile portical
 
 FROM alpine:3
+
+# An ARG does not survive into the next stage, so it is declared again. These
+# labels are how `docker inspect` answers what a pulled image actually is,
+# which matters when every published tag also exists as :latest.
+ARG VERSION=development
+LABEL org.opencontainers.image.version="$VERSION" \
+      org.opencontainers.image.title="portical" \
+      org.opencontainers.image.description="Manage UPnP port forwarding rules for Docker containers with a single label" \
+      org.opencontainers.image.source="https://github.com/danielbodart/portical" \
+      org.opencontainers.image.licenses="Apache-2.0"
 
 # Bun's compiled output links against the C++ runtime. Nothing else is needed:
 # v1's image carried the Docker CLI and miniupnpc, and both are now gone -

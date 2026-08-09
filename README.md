@@ -10,6 +10,9 @@ It was inspired by [Traefik Proxy](https://traefik.io/traefik/) autoconfiguratio
 ## Requirements
 - Some Docker containers you want to expose to the internet
 - UPnP-enabled internet gateway (tested on Google Nest Wifi)
+- 64-bit Linux, `amd64` or `arm64`. The published image is both, so a Pi 4/5 or
+  an ARM NAS pulls the right one. 32-bit ARM (`armv7`, a Pi on 32-bit Raspberry
+  Pi OS) is not supported: Bun has no 32-bit target to compile to.
 
 ## Usage
 There are 2 parts to Portical:
@@ -90,6 +93,7 @@ things, and neither was complete on its own - see [What changed in v2](#what-cha
 | `--manage-all` | Manage every Portical rule regardless of where it points. Only safe with one Portical on the network. |
 | `--helper-image IMG` | Portical's own image, used to reach the gateway from inside a macvlan container. Detected automatically. |
 | `--cleanup-on-exit` | Remove Portical's mappings on shutdown. |
+| `--version` | Show the version and exit. |
 
 Environment variables: `PORTICAL_UPNP_ROOT_URL` (same as `--root`) and
 `PORTICAL_POLL_INTERVAL` (same as `--duration`).
@@ -244,9 +248,37 @@ of which are in v2, and to [@jhenkens](https://github.com/jhenkens), whose
 ```shell
 mise install     # installs the pinned Bun
 bun install
-bun test
-bun run build    # compiles a standalone binary into dist/
+bun run.ts test
+bun run.ts check   # typecheck
+bun run.ts build   # compiles a standalone binary into dist/
+bun run.ts image   # builds both architectures locally
 ```
+
+`run.ts` is the only place any of this is defined, so CI runs the same commands
+you do.
+
+### Versions
+
+Published images carry both `:latest` and an exact version, so a deployment can
+be pinned and rolled back:
+
+```yaml
+image: 'danielbodart/portical:2.58.412'
+```
+
+The number is derived from the repository rather than stored in it. Only the
+major is committed - in `package.json`, because that one is a decision: it says
+this is the rewrite and the shell script was v1, and it moves when
+compatibility breaks. The minor is the commit count, so it only goes up and
+names exactly one commit; the patch is the CI run number, which separates two
+builds of the same commit. Locally the patch becomes a timestamp, so a
+developer build sorts after CI's and is obviously not one.
+
+Nothing needs bumping to release, and there is no committed number that can
+disagree with what was published. `portical --version` reports it, every run
+logs it as its first line, and it is on the image as
+`org.opencontainers.image.version`. Running from source with no build step says
+`development`, which is the truth about that build.
 
 Everything that talks HTTP - the Docker Engine API and the gateway - goes through a
 single `(Request) => Promise<Response>` function type, so the tests replace both
