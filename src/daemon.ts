@@ -290,12 +290,11 @@ export class Portical {
       // rethrew, so any dropped stream took the whole process down and
       // `restart: unless-stopped` bounced the container in a loop.
       //
-      // The common case is not an error at all: Bun's fetch idle-times-out the
-      // long-poll after a few minutes with no container events, so on a quiet
-      // host the stream ends routinely. Reconnecting is therefore silent - the
-      // interval pass still logs any real Docker trouble (its containers() call
-      // fails and is reported), so there is nothing here worth a line every
-      // few minutes.
+      // Drops should be rare now the events fetch disables Bun's ~300s timeout
+      // (see http.ts), leaving Docker restarts and the like. Reconnecting is
+      // silent: the interval pass still logs any real Docker trouble (its
+      // containers() call fails and is reported), so a bare stream reopen is
+      // not worth a line.
       while (!signal.aborted) {
         try {
           for await (const event of this.docker.events(this.options.label, signal)) {

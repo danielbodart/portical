@@ -20,8 +20,28 @@ export const http: Handler = (request) => fetch(request);
  * Bun's fetch speaks unix sockets natively, so reaching the Docker Engine API
  * needs no client library and no `docker` binary in the image.
  */
+// Bun supports `timeout` on its fetch extension at runtime, but @types/bun
+// does not declare it yet, so teach the global type about it. Used below to
+// switch off Bun's hard ~300s fetch timeout for the one call that must outlive
+// it. See oh-my-pi#2422 / oven-sh/bun: the timeout cannot be extended with an
+// AbortSignal, only disabled with this flag.
+declare global {
+  interface BunFetchRequestInit {
+    timeout?: boolean | number;
+  }
+}
+
 export function overUnixSocket(path: string): Handler {
-  return (request) => fetch(request, { unix: path });
+  return (request) =>
+    // Docker's /events endpoint is a long-poll that sits idle whenever no
+    // container starts or stops. Bun's ~300s fetch timeout would abort that
+    // idle stream - "operation timed out" - which read as fatal and restarted
+    // the whole daemon every ~5 minutes on a quiet host. Disable the timeout
+    // for the stream only; every other Docker call keeps the default bound so
+    // a genuinely hung socket cannot wedge a pass forever.
+    request.url.includes("/events")
+      ? fetch(request, { unix: path, timeout: false })
+      : fetch(request, { unix: path });
 }
 
 /** Fail a request that takes too long, so a silent gateway cannot hang a pass. */
