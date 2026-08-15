@@ -18,7 +18,7 @@ export class FakeDocker implements DockerClient {
   /** What imageOf reports, keyed by container. */
   images: Record<string, string> = {};
 
-  private waiting: ((event: DockerEvent) => void)[] = [];
+  private waiting: { resolve: (event?: DockerEvent) => void; reject: (error: Error) => void }[] = [];
   private queue: DockerEvent[] = [];
 
   async containers(label: string): Promise<Container[]> {
@@ -30,8 +30,8 @@ export class FakeDocker implements DockerClient {
     while (!signal.aborted) {
       const queued = this.queue.shift();
       if (queued) { yield queued; continue; }
-      const next = await new Promise<DockerEvent | undefined>((resolve) => {
-        this.waiting.push(resolve);
+      const next = await new Promise<DockerEvent | undefined>((resolve, reject) => {
+        this.waiting.push({ resolve, reject });
         signal.addEventListener("abort", () => resolve(undefined), { once: true });
       });
       if (!next) return;
@@ -62,8 +62,14 @@ export class FakeDocker implements DockerClient {
 
   private emit(event: DockerEvent): void {
     const waiter = this.waiting.shift();
-    if (waiter) waiter(event);
+    if (waiter) waiter.resolve(event);
     else this.queue.push(event);
+  }
+
+  /** Make the current event stream throw, as the socket's idle timeout does. */
+  dropStream(error: Error = new Error("The operation timed out")): void {
+    const waiter = this.waiting.shift();
+    if (waiter) waiter.reject(error);
   }
 }
 

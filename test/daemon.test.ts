@@ -426,6 +426,30 @@ describe("run", () => {
     controller.abort();
     await running;
   });
+
+  test("reconnects when the event stream drops instead of exiting", async () => {
+    const { docker, router, daemon } = await portical({}, { interval: 3600 });
+    const controller = new AbortController();
+    const running = daemon.run(controller.signal);
+    await Bun.sleep(20);
+
+    // The stream drops the way the Docker socket's idle timeout drops it on a
+    // quiet host - throwing, without the shutdown signal being aborted. Before
+    // the fix this exited the process; now it reconnects.
+    docker.dropStream(new Error("The operation timed out"));
+    // Queued while the daemon is between streams; a reopened stream must drain
+    // it. If run() had exited on the drop, this event would never be seen and
+    // no mapping would appear (the interval is an hour away).
+    docker.start(nginx());
+
+    // Longer than the reconnect backoff, so the fresh stream has opened.
+    await Bun.sleep(1100);
+
+    expect(router.mappings).toHaveLength(1);
+
+    controller.abort();
+    await running;
+  });
 });
 
 describe("summary", () => {

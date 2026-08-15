@@ -284,13 +284,36 @@ export class Portical {
     );
 
     try {
-      for await (const event of this.docker.events(this.options.label, signal)) {
+      // Reconnect rather than exit if the event stream ends. Losing the stream
+      // is not fatal: the interval ticker keeps reconciling, so the worst case
+      // is degrading to poll-only until a fresh stream opens. Earlier this
+      // rethrew, so any dropped stream took the whole process down and
+      // `restart: unless-stopped` bounced the container in a loop.
+      //
+      // The common case is not an error at all: Bun's fetch idle-times-out the
+      // long-poll after a few minutes with no container events, so on a quiet
+      // host the stream ends routinely. Reconnecting is therefore silent - the
+      // interval pass still logs any real Docker trouble (its containers() call
+      // fails and is reported), so there is nothing here worth a line every
+      // few minutes.
+      while (!signal.aborted) {
+        try {
+          for await (const event of this.docker.events(this.options.label, signal)) {
+            if (signal.aborted) break;
+            this.log(`Container ${event.container} ${event.action}`);
+            await pass();
+          }
+        } catch {
+          // Swallowed on purpose: reopen below unless we are shutting down.
+        }
         if (signal.aborted) break;
-        this.log(`Container ${event.container} ${event.action}`);
-        await pass();
+        // A short backoff, so a stream that fails to open immediately - Docker
+        // still coming up - does not spin. Interrupted at once on shutdown.
+        await new Promise<void>((resolve) => {
+          const timer = setTimeout(resolve, 1000);
+          signal.addEventListener("abort", () => { clearTimeout(timer); resolve(); }, { once: true });
+        });
       }
-    } catch (error) {
-      if (!signal.aborted) throw error;
     } finally {
       clearInterval(ticker);
       await pending;
