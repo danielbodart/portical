@@ -9,7 +9,7 @@ It was inspired by [Traefik Proxy](https://traefik.io/traefik/) autoconfiguratio
 
 ## Requirements
 - Some Docker containers you want to expose to the internet
-- UPnP-enabled internet gateway (tested on Google Nest Wifi)
+- UPnP-enabled internet gateway (tested on Google Nest Wifi running OpenWRT)
 - 64-bit Linux, `amd64` or `arm64`. The published image is both, so a Pi 4/5 or
   an ARM NAS pulls the right one. 32-bit ARM (`armv7`, a Pi on 32-bit Raspberry
   Pi OS) is not supported: Bun has no 32-bit target to compile to.
