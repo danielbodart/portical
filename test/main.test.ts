@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { firstGatewayAmong, parseArguments } from "../src/main.ts";
+import { firstGatewayAmong, parseArguments, startupBanner } from "../src/main.ts";
 import { FakeGateway } from "./fakes/gateway.ts";
 
 describe("parseArguments", () => {
@@ -80,6 +80,33 @@ describe("parseArguments", () => {
 
   test("rejects a non-numeric interval", () => {
     expect(() => parseArguments(["-d", "soon"], {})).toThrow(/positive number/);
+  });
+});
+
+/**
+ * The banner is the breadcrumb for a start-up crash (issue #9): if it never
+ * appears, Portical's code did not run. So it has to name the build, the
+ * runtime and the machine, and it has to stay legible even when handed the
+ * base64 payload the internal `relay` command receives.
+ */
+describe("startupBanner", () => {
+  test("names the build, the runtime and the machine it is on", () => {
+    const line = startupBanner(["run", "-f"]);
+    expect(line).toContain("Portical ");
+    expect(line).toContain(`Bun ${Bun.version}`);
+    expect(line).toContain(`${process.platform}/${process.arch}`);
+    expect(line).toContain("args: run -f");
+  });
+
+  test("says so plainly when there are no arguments", () => {
+    expect(startupBanner([])).toContain("args: (none)");
+  });
+
+  test("caps a huge argument rather than dumping the whole thing", () => {
+    const payload = "x".repeat(5000);
+    const line = startupBanner([payload]);
+    expect(line.length).toBeLessThan(400);
+    expect(line).toContain("(5000 chars)");
   });
 });
 

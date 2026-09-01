@@ -6,6 +6,7 @@ import { HttpDockerClient } from "./docker.ts";
 import { http, overUnixSocket, withTimeout, type Handler } from "./http.ts";
 import { UpnpGateway } from "./upnp.ts";
 import { version } from "./version.ts";
+import { release } from "node:os";
 
 const USAGE = `portical - UPnP port forwarding for Docker containers, driven by a label
 
@@ -174,7 +175,7 @@ async function connect(root: string | undefined) {
 
   if (root) return UpnpGateway.at(gatewayHttp, root);
 
-  console.log("Searching for an internet gateway...");
+  note("Searching for an internet gateway...");
   const found = await discover();
   if (found.length === 0) {
     throw new Error(
@@ -187,7 +188,50 @@ async function connect(root: string | undefined) {
   return firstGatewayAmong(gatewayHttp, found);
 }
 
+/**
+ * A line of running commentary, on stderr.
+ *
+ * stdout is reserved for a command's actual output - the rows `list` prints,
+ * the string `--version` prints, the framed result `relay` prints - so
+ * Portical's progress and diagnostics go to stderr instead, where they cannot
+ * corrupt anything reading that output. Everything the daemon says about what
+ * it is doing, and every breadcrumb below, comes through here.
+ */
+function note(message: string): void {
+  process.stderr.write(`${message}\n`);
+}
+
+/**
+ * The first thing main() prints, and deliberately full of detail.
+ *
+ * Issue #9 was a start-up crash where Bun's own crash report was all that
+ * appeared - and even its "Args:" line came out blank - so there was no way to
+ * tell whether any of Portical's own code had run, let alone how far it got or
+ * on what. This line answers that. If it shows up, JS started and we can read
+ * the build, the Bun runtime, the machine and the arguments straight from it;
+ * if it does not, the crash is under Bun before main() ever ran, which is a
+ * runtime or environment problem rather than one in here. Either way the next
+ * report says something the last one could not.
+ *
+ * The arguments are capped rather than printed whole: `relay` is handed a
+ * base64 SOAP body that can run to kilobytes, and the point here is a legible
+ * breadcrumb, not a transcript.
+ */
+export function startupBanner(argv: readonly string[]): string {
+  const args = argv.length > 0 ? argv.join(" ") : "(none)";
+  const shown = args.length > 200 ? `${args.slice(0, 200)}... (${args.length} chars)` : args;
+  return (
+    `Portical ${version} starting - Bun ${Bun.version}, ` +
+    `${process.platform}/${process.arch}, kernel ${release()}, args: ${shown}`
+  );
+}
+
 export async function main(argv: readonly string[]): Promise<number> {
+  // Before anything else, and to stderr so it lands whatever a command later
+  // writes to stdout. See startupBanner: this is the breadcrumb that tells a
+  // start-up crash apart from Portical's code never having run at all.
+  note(startupBanner(argv));
+
   let parsed: Parsed;
   try {
     parsed = parseArguments(argv, Bun.env);
@@ -219,16 +263,12 @@ export async function main(argv: readonly string[]): Promise<number> {
     return runRelay(payload);
   }
 
-  // First line of every run, and after the relay branch so the relay's output
-  // stays exactly the one thing its caller parses. A bug report that starts
-  // with this needs no follow-up question about which build it was.
-  console.log(`Portical ${version}`);
-
+  note("Connecting to the gateway...");
   const gateway = await connect(parsed.root);
-  console.log(`Using gateway at ${gateway.controlUrl}`);
+  note(`Using gateway at ${gateway.controlUrl}`);
 
   const external = await gateway.externalAddress().catch(() => undefined);
-  if (external) console.log(`External address is ${external}`);
+  if (external) note(`External address is ${external}`);
 
   if (parsed.command === "list") {
     for (const mapping of await gateway.mappings()) {
@@ -244,8 +284,9 @@ export async function main(argv: readonly string[]): Promise<number> {
   // networked containers are forwarded to the host, so their mappings have to
   // name it, and v1 never had to work it out because upnpc inferred it.
   const hostAddress = await addressFacing(new URL(gateway.controlUrl).hostname);
-  if (hostAddress) console.log(`This host is ${hostAddress} on the LAN`);
+  if (hostAddress) note(`This host is ${hostAddress} on the LAN`);
 
+  note(`Talking to Docker at ${parsed.socket}`);
   const docker = new HttpDockerClient(overUnixSocket(parsed.socket));
   const options = { ...parsed.options, hostAddress };
 
@@ -263,9 +304,9 @@ export async function main(argv: readonly string[]): Promise<number> {
       gateway.serviceType,
     );
 
-  const portical = new Portical(docker, gateway, options, console.log, asContainer);
+  const portical = new Portical(docker, gateway, options, note, asContainer);
 
-  if (options.dryRun) console.log("Dry run - nothing will be changed");
+  if (options.dryRun) note("Dry run - nothing will be changed");
 
   switch (parsed.command) {
     case "update":
@@ -276,7 +317,7 @@ export async function main(argv: readonly string[]): Promise<number> {
       const controller = new AbortController();
       for (const signal of ["SIGINT", "SIGTERM"] as const) {
         process.on(signal, () => {
-          console.log(`\nReceived ${signal}, shutting down...`);
+          note(`\nReceived ${signal}, shutting down...`);
           controller.abort();
         });
       }
