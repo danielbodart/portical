@@ -27,6 +27,8 @@ export interface Options {
   readonly manageAll: boolean;
   /** The Docker host's address on the LAN, for bridge and host networking. */
   readonly hostAddress?: string;
+  /** Milliseconds to wait before reopening a dropped event stream. */
+  readonly reconnectBackoff: number;
 }
 
 export const DEFAULTS: Options = {
@@ -42,6 +44,7 @@ export const DEFAULTS: Options = {
   dryRun: false,
   cleanupOnExit: false,
   manageAll: false,
+  reconnectBackoff: 1000,
 };
 
 export type Log = (message: string) => void;
@@ -308,9 +311,21 @@ export class Portical {
         if (signal.aborted) break;
         // A short backoff, so a stream that fails to open immediately - Docker
         // still coming up - does not spin. Interrupted at once on shutdown.
+        //
+        // Both ways out converge on finish() so the listener is always taken
+        // off again. `once` only unregisters a listener whose event actually
+        // fires, and on the usual path abort never does, so a listener left
+        // behind here would pile up on a signal that lives as long as the
+        // daemon - one per reconnect, never collected.
         await new Promise<void>((resolve) => {
-          const timer = setTimeout(resolve, 1000);
-          signal.addEventListener("abort", () => { clearTimeout(timer); resolve(); }, { once: true });
+          let timer: ReturnType<typeof setTimeout>;
+          const finish = () => {
+            clearTimeout(timer);
+            signal.removeEventListener("abort", finish);
+            resolve();
+          };
+          timer = setTimeout(finish, this.options.reconnectBackoff);
+          signal.addEventListener("abort", finish);
         });
       }
     } finally {

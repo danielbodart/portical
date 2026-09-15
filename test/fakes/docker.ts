@@ -30,10 +30,15 @@ export class FakeDocker implements DockerClient {
     while (!signal.aborted) {
       const queued = this.queue.shift();
       if (queued) { yield queued; continue; }
+      // Taken off again once settled, for the same reason the daemon's backoff
+      // does: a stream reopened on every drop would otherwise leave a listener
+      // behind on the shutdown signal each time round.
+      let onAbort!: () => void;
       const next = await new Promise<DockerEvent | undefined>((resolve, reject) => {
         this.waiting.push({ resolve, reject });
-        signal.addEventListener("abort", () => resolve(undefined), { once: true });
-      });
+        onAbort = () => resolve(undefined);
+        signal.addEventListener("abort", onAbort, { once: true });
+      }).finally(() => signal.removeEventListener("abort", onAbort));
       if (!next) return;
       yield next;
     }

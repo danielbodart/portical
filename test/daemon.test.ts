@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, test } from "bun:test";
+import { getEventListeners } from "node:events";
 import { DEFAULTS, Portical, type Options } from "../src/daemon.ts";
 import { FORWARD_LABEL, NETWORK_LABEL } from "../src/resolve.ts";
 import { UpnpGateway } from "../src/upnp.ts";
@@ -446,6 +447,32 @@ describe("run", () => {
     await Bun.sleep(1100);
 
     expect(router.mappings).toHaveLength(1);
+
+    controller.abort();
+    await running;
+  });
+
+  test("does not leave an abort listener behind on every reconnect", async () => {
+    // Issue #10, reported as a memory leak. `once: true` only unregisters a
+    // listener whose event actually fires; the backoff's abort listener does
+    // not fire on the usual path, so before the fix each reconnect left one
+    // attached to a signal that lives as long as the daemon.
+    const { docker, daemon } = await portical({}, { interval: 3600, reconnectBackoff: 10 });
+    const controller = new AbortController();
+    const running = daemon.run(controller.signal);
+    await Bun.sleep(30);
+
+    const settled = getEventListeners(controller.signal, "abort").length;
+
+    for (let index = 0; index < 20; index++) {
+      docker.dropStream(new Error("The operation timed out"));
+      // Longer than the backoff, so the stream has reopened and the daemon is
+      // back to waiting rather than caught mid-reconnect.
+      await Bun.sleep(30);
+    }
+
+    // Flat, not `settled + 20`.
+    expect(getEventListeners(controller.signal, "abort").length).toBe(settled);
 
     controller.abort();
     await running;

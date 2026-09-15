@@ -77,14 +77,25 @@ function search(target: string, timeout: number, found: Set<string>): Promise<vo
  * Connecting a UDP socket sends nothing - it only asks the kernel to pick the
  * route, and with it the source address it would use to reach that host.
  */
-export function addressFacing(host: string): Promise<string | undefined> {
+export function addressFacing(host: string, timeout = 1000): Promise<string | undefined> {
   return new Promise((resolve) => {
     const socket = createSocket("udp4");
-    socket.once("error", () => { socket.close(); resolve(undefined); });
-    socket.connect(SSDP_PORT, host, () => {
-      const address = socket.address().address;
-      socket.close();
+
+    // Closing an already-closed socket throws, and the timer, an error and a
+    // successful connect can each get here first.
+    const finish = (address?: string) => {
+      clearTimeout(timer);
+      try { socket.close(); } catch { /* already closed */ }
       resolve(address === "0.0.0.0" ? undefined : address);
-    });
+    };
+
+    // connect() only asks the kernel to pick a route, so it answers at once or
+    // never. Without a bound, a kernel that does neither would leave this
+    // promise pending and its socket open for the life of the process.
+    const timer = setTimeout(finish, timeout);
+    timer.unref?.();
+
+    socket.once("error", () => finish());
+    socket.connect(SSDP_PORT, host, () => finish(socket.address().address));
   });
 }
