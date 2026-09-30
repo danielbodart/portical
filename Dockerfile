@@ -1,7 +1,18 @@
 # Built on the *build* platform whatever the target, and cross-compiled to the
 # target architecture by Bun itself. Emulating an arm64 toolchain under QEMU to
 # produce an arm64 image takes minutes; this takes seconds.
-FROM --platform=$BUILDPLATFORM oven/bun:1-alpine AS build
+
+# The Bun that compiles the binary, and so the runtime that ends up inside it.
+# Kept in step with mise.toml - the one place the version is written down - by
+# `bun run.ts check`, which fails if they disagree; `bun run.ts sync` rewrites
+# this line from it. Carried here as well as there so that `docker build .` on a
+# clean checkout is still correct without mise installed.
+#
+# Pinned rather than floating on :1, which silently took the published image
+# from 1.3.14 to 1.4.0 on the first rebuild after that release - no commit, no
+# changelog, and a runtime nobody had tested against.
+ARG BUN_VERSION=1.4.2
+FROM --platform=$BUILDPLATFORM oven/bun:${BUN_VERSION}-alpine AS build
 
 WORKDIR /app
 

@@ -38,8 +38,45 @@ export async function version(): Promise<string> {
   return `${major}.${revisions}.${build}`;
 }
 
+const MISE = "mise.toml";
+const DOCKERFILE = "Dockerfile";
+const PINNED = /^ARG BUN_VERSION=(.+)$/m;
+
+/** The Bun everything is built with. mise.toml is the one place it is written. */
+export async function bunVersion(): Promise<string> {
+  const found = /^bun\s*=\s*"([^"]+)"/m.exec(await Bun.file(MISE).text())?.[1];
+  if (!found) throw new Error(`no bun version in ${MISE}`);
+  return found;
+}
+
+async function pinnedBunVersion(): Promise<string> {
+  const found = PINNED.exec(await Bun.file(DOCKERFILE).text())?.[1];
+  if (!found) throw new Error(`no ARG BUN_VERSION in ${DOCKERFILE}`);
+  return found;
+}
+
+/** Rewrite the Dockerfile's pin from mise.toml. */
+export async function sync() {
+  const wanted = await bunVersion();
+  const dockerfile = await Bun.file(DOCKERFILE).text();
+  await Bun.write(DOCKERFILE, dockerfile.replace(PINNED, () => `ARG BUN_VERSION=${wanted}`));
+  console.log(`${DOCKERFILE} pinned to bun ${wanted}`);
+}
+
 export async function check() {
   await $`bunx tsc --noEmit`;
+
+  // The image compiles the binary with the Dockerfile's Bun, not with mise's,
+  // so a Dockerfile left behind ships a runtime nobody ran the tests against.
+  // Checked here because the build job needs this one, so a drifted pin cannot
+  // reach Docker Hub.
+  const [wanted, pinned] = await Promise.all([bunVersion(), pinnedBunVersion()]);
+  if (wanted !== pinned) {
+    throw new Error(
+      `${DOCKERFILE} builds on bun ${pinned} but ${MISE} says ${wanted}. ` +
+        `Run \`bun run.ts sync\` to pin it from ${MISE}.`,
+    );
+  }
 }
 
 export async function test(...args: string[]) {
@@ -61,7 +98,7 @@ export async function build(outfile = "dist/portical") {
 /** The same image CI publishes, for both architectures, built locally. */
 export async function image(tag = "danielbodart/portical:dev") {
   const v = await version();
-  await $`docker buildx build --platform linux/amd64,linux/arm64 --build-arg VERSION=${v} --tag ${tag} .`;
+  await $`docker buildx build --platform linux/amd64,linux/arm64 --build-arg VERSION=${v} --build-arg BUN_VERSION=${await bunVersion()} --tag ${tag} .`;
 }
 
 const commands: Record<string, (...args: string[]) => Promise<unknown>> = {
@@ -70,6 +107,7 @@ const commands: Record<string, (...args: string[]) => Promise<unknown>> = {
   test,
   build,
   image,
+  sync,
 };
 
 const [name = "build", ...args] = process.argv.slice(2);
