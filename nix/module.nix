@@ -7,6 +7,7 @@
   config,
   lib,
   pkgs,
+  utils,
   ...
 }:
 
@@ -14,7 +15,6 @@ let
   inherit (lib)
     concatLists
     concatMap
-    escapeShellArgs
     filter
     mapAttrsToList
     mkEnableOption
@@ -28,9 +28,30 @@ let
 
   cfg = config.services.portical;
 
-  # The label's grammar, one term per element. Checked here so that a typo
-  # fails the evaluation rather than turning up as a warning in the journal.
-  term = types.strMatching "published|[0-9]{1,5}(:[0-9]{1,5})?(/(tcp|udp))?";
+  # The label's grammar, one term per element, with every port in 1-65535 as
+  # src/rules.ts has it. Checked here so that a typo fails the evaluation,
+  # against the service that has it, rather than turning up as a warning in
+  # the journal.
+  term =
+    let
+      syntax = types.strMatching "published|[0-9]{1,5}(:[0-9]{1,5})?(/(tcp|udp))?";
+      # The external and internal port, either of which may be absent.
+      ports =
+        value:
+        let
+          match = builtins.match "([0-9]+)(:([0-9]+))?.*" value;
+        in
+        if match == null then [ ] else [ (builtins.elemAt match 0) (builtins.elemAt match 2) ];
+      inRange =
+        value:
+        lib.all (port: port >= 1 && port <= 65535) (
+          map lib.toIntBase10 (filter (port: port != null) (ports value))
+        );
+    in
+    types.addCheck syntax inRange
+    // {
+      description = "${syntax.description}, with ports from 1 to 65535";
+    };
 
   # The ports a term opens on this host: the internal port, for each protocol
   # it names. `published` is whatever the unit listens on, which is not
@@ -42,7 +63,7 @@ let
       external = builtins.elemAt match 0;
       internal = builtins.elemAt match 2;
       protocol = builtins.elemAt match 4;
-      port = lib.toInt (if internal == null then external else internal);
+      port = lib.toIntBase10 (if internal == null then external else internal);
     in
     if match == null then
       [ ]
@@ -201,6 +222,19 @@ in
   };
 
   config = mkIf cfg.enable {
+    assertions = [
+      {
+        # SupplementaryGroups=docker would otherwise fail the service at
+        # start, 216/GROUP, rather than the build.
+        assertion = !(builtins.elem "docker" cfg.sources) || config.users.groups ? docker;
+        message = ''
+          services.portical.sources includes "docker", but there is no docker group:
+          enable virtualisation.docker, or define users.groups.docker for a Docker
+          installed another way.
+        '';
+      }
+    ];
+
     networking.firewall = mkIf cfg.openFirewall {
       allowedTCPPorts = portsFor "tcp";
       allowedUDPPorts = portsFor "udp";
@@ -214,7 +248,9 @@ in
       after = [ "network-online.target" ] ++ optional (builtins.elem "docker" cfg.sources) "docker.service";
 
       serviceConfig = {
-        ExecStart = escapeShellArgs (
+        # Escaped for systemd rather than a shell: it expands % specifiers
+        # and $VARIABLES even inside quotes.
+        ExecStart = utils.escapeSystemdExecArgs (
           [
             (lib.getExe cfg.package)
             "--source"

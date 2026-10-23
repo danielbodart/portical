@@ -3,7 +3,9 @@
 { pkgs, self }:
 
 let
-  system = pkgs.nixos {
+  inherit (pkgs) lib;
+
+  base = {
     imports = [ self.nixosModules.default ];
     boot.loader.grub.enable = false;
     fileSystems."/" = {
@@ -11,6 +13,12 @@ let
       fsType = "tmpfs";
     };
     system.stateVersion = "25.11";
+  };
+
+  system = pkgs.nixos {
+    imports = [ base ];
+    # What virtualisation.docker would define, without building Docker.
+    users.groups.docker = { };
 
     services.portical = {
       enable = true;
@@ -20,6 +28,10 @@ let
         "docker"
       ];
       openFirewall = true;
+      extraArgs = [
+        "--label"
+        "a%nb$HOME"
+      ];
     };
 
     systemd.services.minecraft = {
@@ -33,7 +45,58 @@ let
     };
   };
   inherit (system.config) systemd networking;
+
+  # Whether a configuration fails to evaluate, or fails an assertion.
+  refused =
+    config:
+    let
+      evaluated = (pkgs.nixos { imports = [ base config ]; }).config;
+      attempt = builtins.tryEval (
+        builtins.deepSeq (map (unit: unit.text) (lib.attrValues evaluated.systemd.units)) (
+          lib.any (assertion: !assertion.assertion) evaluated.assertions
+        )
+      );
+    in
+    !attempt.success || attempt.value;
+
+  forwarding = forward: {
+    systemd.services.game = {
+      serviceConfig.ExecStart = "${pkgs.coreutils}/bin/sleep infinity";
+      portical.forward = forward;
+    };
+  };
+
+  # Each must be refused when evaluated, not later by Portical at run time.
+  refusals = {
+    "port 0" = forwarding [ "0" ];
+    "port 70000" = forwarding [ "70000/tcp" ];
+    "internal port 65536" = forwarding [ "80:65536" ];
+    "a word" = forwarding [ "http" ];
+    "the docker source without a docker group" = {
+      services.portical = {
+        enable = true;
+        sources = [ "docker" ];
+      };
+    };
+  };
+  accepted = {
+    "ports 1 and 65535" = forwarding [
+      "1"
+      "65535:1/udp"
+    ];
+    "the docker source with a docker group" = {
+      users.groups.docker = { };
+      services.portical = {
+        enable = true;
+        sources = [ "docker" ];
+      };
+    };
+  };
+  wrong =
+    lib.attrNames (lib.filterAttrs (_: config: !refused config) refusals)
+    ++ lib.attrNames (lib.filterAttrs (_: refused) accepted);
 in
+assert lib.assertMsg (wrong == [ ]) "module-check: wrongly accepted or refused: ${lib.concatStringsSep ", " wrong}";
 pkgs.runCommand "portical-module-check"
   {
     minecraft = systemd.units."minecraft.service".text;
@@ -50,9 +113,11 @@ pkgs.runCommand "portical-module-check"
     # In [Unit], before [Service] starts.
     sed '/^\[Service\]/q' <<<"$minecraft" | grep -q X-Portical-Forward || fail "not in [Unit]"
 
-    grep -q -- '--source systemd,docker' <<<"$portical" || fail "sources not passed"
-    grep -q -- '--root http://192.168.1.1:5000/rootDesc.xml' <<<"$portical" || fail "root not passed"
-    grep -q -- '--docker-socket /run/docker.sock' <<<"$portical" || fail "docker socket not passed"
+    grep -qF -- '"--source" "systemd,docker"' <<<"$portical" || fail "sources not passed"
+    grep -qF -- '"--root" "http://192.168.1.1:5000/rootDesc.xml"' <<<"$portical" || fail "root not passed"
+    grep -qF -- '"--docker-socket" "/run/docker.sock"' <<<"$portical" || fail "docker socket not passed"
+    # Escaped for systemd, which would otherwise expand %n and $HOME.
+    grep -qF -- '"--label" "a%%nb$$HOME"' <<<"$portical" || fail "extraArgs not escaped for systemd"
     grep -qx 'DynamicUser=true' <<<"$portical" || fail "not a dynamic user"
     grep -qx 'SupplementaryGroups=docker' <<<"$portical" || fail "not in the docker group"
 
