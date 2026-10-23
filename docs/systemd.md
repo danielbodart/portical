@@ -9,11 +9,48 @@ container. Run this way, it can forward ports for:
 Either, or both at once. A host with services of both kinds should run one native
 Portical reading both - see [Docker containers too](#docker-containers-too).
 
-There are two ways to install it: the [release binary and unit
-file](#installing-from-a-release), which works on any systemd distribution, or the
-[NixOS module](#nixos). The rule grammar, the commands and the options are the same
+There are two ways to install it: the [NixOS module](#nixos), which is the whole
+setup in a few lines of configuration, or the [release binary and unit
+file](#installing-from-a-release), which works on any other systemd distribution.
+The rule grammar, the commands and the options are the same
 however Portical runs, and are in the [README](../README.md). For a host whose
 services are all in Docker, [running Portical in Docker](docker.md) is simpler.
+
+## NixOS
+
+The repository is a flake with a package and a NixOS module. Importing the
+module, enabling it and listing each service's forwards is all there is to it:
+
+```nix
+# flake.nix
+inputs.portical.url = "github:danielbodart/portical";
+
+# configuration.nix, with inputs.portical.nixosModules.default imported
+services.portical = {
+  enable = true;
+  root = "http://192.168.1.1:5000/rootDesc.xml";
+  # sources = [ "systemd" "docker" ];  # systemd alone by default
+};
+
+systemd.services.minecraft.portical.forward = [ "25565/tcp" "19133:19132/udp" ];
+```
+
+`portical.forward` is added to every `systemd.services.<name>` and is written into
+the unit as `X-Portical-Forward` lines, checked against the grammar when the
+configuration is evaluated. It works whether or not `services.portical` is enabled
+in the same place. Portical runs as a dynamic user with no capabilities. With
+`"docker"` among the sources, the module adds the `docker` group and orders
+Portical after Docker itself, and refuses to build if there is no `docker` group.
+
+Set `root`: SSDP discovery through the NixOS firewall usually fails, because the
+gateway's reply comes from its own address to an ephemeral port that the firewall
+does not connect to the multicast search. `openFirewall = true` opens the internal
+port of every `portical.forward` term (not `published`, which is only known at run
+time). Other options: `interval`, `leaseDuration`, `renewWithin`, `steal`,
+`manageAll`, `cleanupOnExit`, `dockerSocket` and `extraArgs`.
+
+The rest of this page is for other distributions, and for what the module writes:
+`portical.forward` becomes the unit key described next.
 
 ## Declaring forwards on a unit
 
@@ -212,36 +249,3 @@ sudo systemctl daemon-reload
 Its mappings are left on the gateway, as on any shutdown. If they should go too,
 add `--cleanup-on-exit` to its `ExecStart` before stopping it, or remove them on
 the router.
-
-## NixOS
-
-The repository is a flake with a package and a NixOS module, which is the
-alternative to the release binary on NixOS:
-
-```nix
-# flake.nix
-inputs.portical.url = "github:danielbodart/portical";
-
-# configuration.nix, with inputs.portical.nixosModules.default imported
-services.portical = {
-  enable = true;
-  root = "http://192.168.1.1:5000/rootDesc.xml";
-  # sources = [ "systemd" "docker" ];  # systemd alone by default
-};
-
-systemd.services.minecraft.portical.forward = [ "25565/tcp" "19133:19132/udp" ];
-```
-
-`portical.forward` is added to every `systemd.services.<name>` and is written into
-the unit as `X-Portical-Forward` lines, checked against the grammar when the
-configuration is evaluated. It works whether or not `services.portical` is enabled
-in the same place. Portical runs as a dynamic user with no capabilities. With
-`"docker"` among the sources, the module adds the `docker` group and orders
-Portical after Docker itself, and refuses to build if there is no `docker` group.
-
-Set `root`: SSDP discovery through the NixOS firewall usually fails, because the
-gateway's reply comes from its own address to an ephemeral port that the firewall
-does not connect to the multicast search. `openFirewall = true` opens the internal
-port of every `portical.forward` term (not `published`, which is only known at run
-time). Other options: `interval`, `leaseDuration`, `renewWithin`, `steal`,
-`manageAll`, `cleanupOnExit`, `dockerSocket` and `extraArgs`.
