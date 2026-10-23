@@ -188,6 +188,7 @@ describe("choosing sources", () => {
     expect(() => parseArguments(["--source", ","], {})).toThrow("at least one of docker, systemd");
     expect(() => parseArguments(["--source", ""], {})).toThrow("at least one of docker, systemd");
     expect(() => parseArguments([], { PORTICAL_SOURCES: " , " })).toThrow("at least one of docker, systemd");
+    expect(() => parseArguments([], { PORTICAL_SOURCES: "" })).toThrow("at least one of docker, systemd");
   });
 
   test("reads the unit file key from --systemd-key or PORTICAL_SYSTEMD_KEY", () => {

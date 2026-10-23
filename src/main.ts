@@ -82,7 +82,7 @@ export function parseArguments(argv: readonly string[], env: Record<string, stri
   let explicitHelperImage = env.PORTICAL_HELPER_IMAGE;
   let help = false;
   let showVersion = false;
-  let sources: SourceName[] | undefined = env.PORTICAL_SOURCES ? sourceNames(env.PORTICAL_SOURCES) : undefined;
+  let sources: SourceName[] | undefined = env.PORTICAL_SOURCES !== undefined ? sourceNames(env.PORTICAL_SOURCES) : undefined;
   let named = false;
   let systemdKey = env.PORTICAL_SYSTEMD_KEY ?? FORWARD_KEY;
   const options: Record<string, unknown> = {
