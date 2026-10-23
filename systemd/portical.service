@@ -1,0 +1,68 @@
+# Portical as a native systemd service, for a host without NixOS - the NixOS
+# module in nix/module.nix writes the same unit from its options.
+#
+# Expects the release binary at /usr/local/bin/portical. Configure it with a
+# drop-in (`systemctl edit portical`) rather than by editing this file, so an
+# update can replace it:
+#
+#   [Service]
+#   Environment=PORTICAL_UPNP_ROOT_URL=http://192.168.1.1:5000/rootDesc.xml
+#
+# To read Docker containers as well, the drop-in also needs the socket's group,
+# which is left out here because a host with no docker group would fail the
+# start with 216/GROUP:
+#
+#   [Unit]
+#   After=docker.service
+#
+#   [Service]
+#   Environment=PORTICAL_SOURCES=systemd,docker
+#   SupplementaryGroups=docker
+
+[Unit]
+Description=Portical UPnP port forwarding
+Documentation=https://github.com/danielbodart/portical/blob/master/docs/systemd.md
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Environment=PORTICAL_SOURCES=systemd
+ExecStart=/usr/local/bin/portical run
+Restart=on-failure
+RestartSec=5
+
+DynamicUser=yes
+
+# Nothing here needs privilege. The system bus lets any user list units, read
+# their properties and subscribe; unit files are world-readable; and ss only
+# reads.
+CapabilityBoundingSet=
+AmbientCapabilities=
+NoNewPrivileges=yes
+# The gateway and SSDP; the system bus and Docker; sock_diag for ss.
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+# Read-only: ss reads cgroupfs to name a socket's cgroup.
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged
+UMask=0077
+# Not MemoryDenyWriteExecute: Bun's JIT needs writable code.
+# Not PrivateNetwork: the whole point is the LAN.
+
+[Install]
+WantedBy=multi-user.target

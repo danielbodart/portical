@@ -95,6 +95,27 @@ export async function build(outfile = "dist/portical") {
   console.log(`built ${outfile} ${v}`);
 }
 
+/**
+ * What a GitHub release carries: a binary per architecture, the systemd unit
+ * that runs it, and their checksums, all in one directory for `gh release
+ * create` to upload as they are. The binaries are glibc builds, for the
+ * distributions a native install is for; the image's musl build is for Alpine.
+ *
+ * x64 is Bun's baseline build, which runs without AVX2. The low-power Celerons
+ * and Atoms in a lot of NAS boxes and mini PCs do not have it, and those are
+ * exactly where this tends to run.
+ */
+export async function release(dir = "dist/release") {
+  const v = await version();
+  await $`rm -rf ${dir} && mkdir -p ${dir}`;
+  for (const [arch, target] of [["x64", "bun-linux-x64-baseline"], ["arm64", "bun-linux-arm64"]]) {
+    await $`bun build --compile --minify --define ${`PORTICAL_VERSION="${v}"`} --target=${target} src/main.ts --outfile ${`${dir}/portical-linux-${arch}`}`;
+  }
+  await $`cp systemd/portical.service ${dir}/`;
+  await $`sha256sum portical-linux-x64 portical-linux-arm64 portical.service > SHA256SUMS`.cwd(dir);
+  console.log(`built ${dir} ${v}`);
+}
+
 /** The same image CI publishes, for both architectures, built locally. */
 export async function image(tag = "danielbodart/portical:dev") {
   const v = await version();
@@ -106,6 +127,7 @@ const commands: Record<string, (...args: string[]) => Promise<unknown>> = {
   check,
   test,
   build,
+  release,
   image,
   sync,
 };

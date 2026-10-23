@@ -39,7 +39,7 @@ FROM alpine:3
 ARG VERSION=development
 LABEL org.opencontainers.image.version="$VERSION" \
       org.opencontainers.image.title="portical" \
-      org.opencontainers.image.description="Manage UPnP port forwarding rules for Docker containers with a single label" \
+      org.opencontainers.image.description="Manage UPnP port forwarding rules for Docker containers and systemd units" \
       org.opencontainers.image.source="https://github.com/danielbodart/portical" \
       org.opencontainers.image.licenses="Apache-2.0"
 
