@@ -182,8 +182,10 @@ of which are in v2, and to [@jhenkens](https://github.com/jhenkens), whose
 
 ## Development
 
-Portical is Go, and the standard library apart from one module:
-[godbus](https://github.com/godbus/dbus) for the systemd source's system bus.
+Portical is Go, and the standard library apart from two modules:
+[godbus](https://github.com/godbus/dbus) for the systemd source's system bus,
+and the author's own [gokit](https://github.com/danielbodart/gokit) -
+itself standard library only - for httpx, clock and sockdiag.
 
 ```shell
 mise install       # installs the pinned Go

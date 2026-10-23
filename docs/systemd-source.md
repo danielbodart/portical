@@ -228,7 +228,9 @@ dumps, TCP in `LISTEN` and UDP bound but unconnected, each for IPv4 and IPv6,
 asking for the socket's cgroup id and its `v6only` flag. They are made once per
 pass, and only when some active unit asks for `published`. All of it is the
 standard library's `syscall` package, with the request and reply layouts
-written out in `internal/systemd/netlink.go`.
+written out in the `sockdiag` package of
+[gokit](https://github.com/danielbodart/gokit), the standard-library-only
+module Portical shares with its sibling daemons.
 
 The cgroup id is the inode of the cgroup's directory in the cgroup2 file
 system, so the ids are put back to paths by walking `/sys/fs/cgroup` (or its
@@ -321,8 +323,9 @@ work for `Desired` but costs a process per call.
 
 ### The D-Bus client
 
-[godbus](https://github.com/godbus/dbus), Portical's one module outside the
-standard library, behind an interface no wider than the source needs:
+[godbus](https://github.com/godbus/dbus), Portical's one third-party module
+(gokit, its other, is the author's own and only the standard library),
+behind an interface no wider than the source needs:
 
 ```go
 // internal/systemd
@@ -351,10 +354,10 @@ the calls above and the matches for the two signals, with godbus doing the
 authentication and the wire format. The `GetAll` calls overlap on the one
 connection, at most `InFlight` (32) at a time.
 
-`systemd.NewSource` takes a `Bus`, a `SocketLister` (`Kernel()` for the real
-one), an `fs.FS` rooted at `/` for the unit files (cached by path, inode, size
-and mtime) and a function for the ephemeral port range, so every part of it can
-be driven by a fake.
+`systemd.NewSource` takes a `Bus`, a `sockdiag.Lister` (`sockdiag.Kernel()` for
+the real one), an `fs.FS` rooted at `/` for the unit files (cached by path,
+inode, size and mtime) and a function for the ephemeral port range, so every
+part of it can be driven by a fake.
 
 ## Command line
 
@@ -381,10 +384,10 @@ input, for `x86_64-linux` and `aarch64-linux`. The pieces are in `nix/`:
 
 - `packages.<system>.default` - the same static `go build` as `./run build`,
   with the version from `MAJOR`, the flake's commit count and its
-  `lastModifiedDate` linked in with `-X`. godbus is vendored by the build's
-  fixed-output `vendorHash`. Nothing is wrapped and nothing goes on `PATH`:
-  `published` asks the kernel itself. `go test` runs as the package's check
-  phase.
+  `lastModifiedDate` linked in with `-X`. godbus and gokit are vendored by
+  the build's fixed-output `vendorHash`. Nothing is wrapped and nothing goes
+  on `PATH`: `published` asks the kernel itself. `go test` runs as the
+  package's check phase.
 - `checks.<system>` - the package (and so `go test`); the module evaluation
   check; the VM test.
 - `nixosModules.default`.
@@ -513,14 +516,14 @@ skip where there is none, as in Nix's build sandbox.
   that resets; one that adds; one that resets and replaces.
 - **Which sockets count** - the development host's real sockets, captured once
   as `ss -Hlntu -e` output in `internal/systemd/testdata` and read into
-  `Listener`s by the test: wildcard IPv4 and IPv6, `v6only`, loopback and
-  `%lo` dropped, the host address kept, cgroup equal, beneath, and via a
+  `sockdiag.Listener`s by the test: wildcard IPv4 and IPv6, `v6only`, loopback
+  and `%lo` dropped, the host address kept, cgroup equal, beneath, and via a
   `TriggeredBy` socket unit, ephemeral UDP dropped, no cgroup reported at all
-  (warns, resolves nothing).
-- **The netlink lister** - the reply parser against built messages, and the
-  real kernel: a TCP and a UDP listener this test opens, found with this
-  process's own cgroup; connected sockets left out; no cgroup2 file system
-  still listing the sockets, without their cgroups.
+  (warns, resolves nothing), a unit with no cgroup claiming nothing.
+- **The netlink lister** is tested where it lives, in gokit's `sockdiag`: the
+  reply parser against built messages, and the real kernel - a TCP and a UDP
+  listener the test opens, found with its own cgroup; connected sockets left
+  out; no cgroup2 file system still listing the sockets, without their cgroups.
 - **`systemd.Source`** - with a fake systemd (units as plain values), an
   in-memory `fs.FS` and a fake lister: an active unit's forwards, an inactive
   unit wanting nothing, `published` alongside explicit terms with explicit

@@ -11,8 +11,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/danielbodart/gokit/httpx"
 	"github.com/danielbodart/portical/internal/fakes"
-	"github.com/danielbodart/portical/internal/httpx"
 	"github.com/danielbodart/portical/internal/model"
 	"github.com/danielbodart/portical/internal/source"
 	"github.com/danielbodart/portical/internal/upnp"

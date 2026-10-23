@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/danielbodart/portical/internal/httpx"
+	"github.com/danielbodart/gokit/httpx"
 	"github.com/danielbodart/portical/internal/upnp"
 )
 

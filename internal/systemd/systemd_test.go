@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/danielbodart/gokit/sockdiag"
 	"github.com/danielbodart/portical/internal/model"
 	"github.com/danielbodart/portical/internal/source"
 )
@@ -159,6 +160,20 @@ func TestPublishedIncludesTheSocketsOfTheSocketUnitThatActivatesIt(t *testing.T)
 	assertEqual(t, rulesOf(f.desired(t)), []model.Rule{rule(53, model.UDP)})
 }
 
+// A unit with no cgroup - one systemd has not started, or a .socket unit whose
+// listening is done by the service - is told apart from the root: it claims
+// none of the host's sockets rather than all of them.
+func TestPublishedClaimsNothingForAUnitWithNoCgroup(t *testing.T) {
+	f := newFixture()
+	f.files.Put("/etc/systemd/system/dns.service", "[Unit]\nX-Portical-Forward=published\n")
+	f.sockets.Set(ss(t, "udp UNCONN 0 0 0.0.0.0:53 0.0.0.0:* cgroup:/system.slice/dns.service <->\n"+
+		"tcp LISTEN 0 128 0.0.0.0:22 0.0.0.0:* cgroup:/system.slice/sshd.service <->\n"))
+	f.systemd.Run(unit("dns.service", triggeredBy("dns.socket")))
+	f.systemd.Group("dns.service", "/system.slice/dns.service")
+
+	assertEqual(t, rulesOf(f.desired(t)), []model.Rule{rule(53, model.UDP)})
+}
+
 func TestPublishedDoesNotListSocketsUnlessSomeUnitAsksForIt(t *testing.T) {
 	f := newFixture()
 	f.files.Put("/etc/systemd/system/mc.service", "[Unit]\nX-Portical-Forward=25565\n")
@@ -176,29 +191,35 @@ func TestPublishedListsSocketsOnceAPassHoweverManyUnitsAsk(t *testing.T) {
 	assertEqual(t, f.sockets.Asked(), 1)
 }
 
+// unknownCgroups lists one socket, on 25565, the way sockdiag.Kernel does
+// when it cannot say whose it is: with the reason, wrapping ErrUnknownCgroups.
+func unknownCgroups(t *testing.T, why string) sockdiag.Lister {
+	return sockdiag.ListerFunc(func(context.Context) ([]sockdiag.Listener, error) {
+		listeners := ss(t, "tcp LISTEN 0 128 0.0.0.0:25565 0.0.0.0:* ino:1 sk:2 <->\n")
+		return listeners, fmt.Errorf("%s, so %w", why, sockdiag.ErrUnknownCgroups)
+	})
+}
+
 func TestPublishedWarnsWhenTheKernelCannotSayWhichCgroupASocketBelongsTo(t *testing.T) {
 	f := newFixture()
+	f.source = NewSource(f.systemd, unknownCgroups(t, "the kernel reports no cgroup for any socket (it needs Linux 5.7 or later)"),
+		f.files, defaultEphemeral, Options{HostAddress: host})
 	f.files.Put("/etc/systemd/system/mc.service", "[Unit]\nX-Portical-Forward=published\n")
-	f.sockets.Set(ss(t, "tcp LISTEN 0 128 0.0.0.0:25565 0.0.0.0:* ino:1 sk:2 <->\n"))
 	f.systemd.Run(unit("mc.service"))
 	f.systemd.Group("mc.service", "/system.slice/mc.service")
 
 	desired := f.desired(t)
 	assertEqual(t, desired.Forwards, nil)
-	if len(desired.Warnings) != 1 || !strings.Contains(desired.Warnings[0], "the kernel reports no cgroup") {
-		t.Fatalf("got %q", desired.Warnings)
-	}
+	assertEqual(t, desired.Warnings, []string{"'published' cannot tell which unit owns a socket and forwards nothing: " +
+		"the kernel reports no cgroup for any socket (it needs Linux 5.7 or later), so the sockets' cgroups are unknown"})
 }
 
 // Not knowing whose sockets they are is not failing to list them: `published`
 // comes to nothing and says why, and every other forward still goes ahead.
 func TestPublishedWithoutCgroup2WarnsAndKeepsTheExplicitForwards(t *testing.T) {
 	f := newFixture()
-	f.source = NewSource(f.systemd, SocketListerFunc(func(context.Context) ([]Listener, error) {
-		listeners := ss(t, "tcp LISTEN 0 128 0.0.0.0:25565 0.0.0.0:* ino:1 sk:2 <->\n")
-		listeners[0].CgroupID = 1
-		return listeners, fmt.Errorf("no cgroup2 file system at /sys/fs/cgroup, so %w", ErrUnknownCgroups)
-	}), f.files, defaultEphemeral, Options{HostAddress: host})
+	f.source = NewSource(f.systemd, unknownCgroups(t, "no cgroup2 file system at /sys/fs/cgroup"),
+		f.files, defaultEphemeral, Options{HostAddress: host})
 	f.files.Put("/etc/systemd/system/mc.service", "[Unit]\nX-Portical-Forward=published\n")
 	f.files.Put("/etc/systemd/system/web.service", "[Unit]\nX-Portical-Forward=8080/tcp\n")
 	f.systemd.Run(unit("mc.service"), unit("web.service"))
@@ -206,12 +227,13 @@ func TestPublishedWithoutCgroup2WarnsAndKeepsTheExplicitForwards(t *testing.T) {
 
 	desired := f.desired(t)
 	assertEqual(t, rulesOf(desired), []model.Rule{rule(8080, model.TCP)})
-	assertEqual(t, desired.Warnings, []string{"no cgroup2 file system at /sys/fs/cgroup, so 'published' cannot tell which unit owns a socket and forwards nothing"})
+	assertEqual(t, desired.Warnings, []string{"'published' cannot tell which unit owns a socket and forwards nothing: " +
+		"no cgroup2 file system at /sys/fs/cgroup, so the sockets' cgroups are unknown"})
 }
 
 func TestPublishedFailsThePassWhenTheSocketsCannotBeListed(t *testing.T) {
 	f := newFixture()
-	f.source = NewSource(f.systemd, SocketListerFunc(func(context.Context) ([]Listener, error) {
+	f.source = NewSource(f.systemd, sockdiag.ListerFunc(func(context.Context) ([]sockdiag.Listener, error) {
 		return nil, errors.New("netlink refused")
 	}), f.files, defaultEphemeral, Options{})
 	f.files.Put("/etc/systemd/system/mc.service", "[Unit]\nX-Portical-Forward=published\n")

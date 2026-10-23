@@ -8,7 +8,7 @@ FROM --platform=$BUILDPLATFORM golang:1.27.3-alpine AS build
 
 WORKDIR /src
 
-# godbus is the one module required, so it is fetched in a layer of its own,
+# The modules (godbus, gokit) are fetched in a layer of their own,
 # which the source changing does not invalidate.
 COPY go.mod go.sum ./
 RUN go mod download

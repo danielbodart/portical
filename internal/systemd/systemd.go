@@ -17,6 +17,7 @@ import (
 	"os"
 	"sync"
 
+	"github.com/danielbodart/gokit/sockdiag"
 	"github.com/danielbodart/portical/internal/model"
 	"github.com/danielbodart/portical/internal/rules"
 	"github.com/danielbodart/portical/internal/source"
@@ -79,7 +80,7 @@ type Options struct {
 // Source is systemd's units as a source.Source.
 type Source struct {
 	bus       Bus
-	sockets   SocketLister
+	sockets   sockdiag.Lister
 	files     *unitFiles
 	ephemeral func() (low, high int, err error)
 	options   Options
@@ -100,12 +101,12 @@ type Source struct {
 // at / as the paths systemd gives are absolute. sockets and ephemeral are only
 // asked when a unit declares `published`. A nil files, sockets or ephemeral
 // is the real machine's.
-func NewSource(bus Bus, sockets SocketLister, files fs.FS, ephemeral func() (low, high int, err error), options Options) *Source {
+func NewSource(bus Bus, sockets sockdiag.Lister, files fs.FS, ephemeral func() (low, high int, err error), options Options) *Source {
 	if files == nil {
 		files = os.DirFS("/")
 	}
 	if sockets == nil {
-		sockets = Kernel()
+		sockets = sockdiag.Kernel()
 	}
 	if ephemeral == nil {
 		ephemeral = EphemeralPorts

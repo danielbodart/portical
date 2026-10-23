@@ -12,8 +12,9 @@ import (
 	"sync"
 	"syscall"
 
-	"github.com/danielbodart/portical/internal/clock"
-	"github.com/danielbodart/portical/internal/httpx"
+	"github.com/danielbodart/gokit/clock"
+	"github.com/danielbodart/gokit/httpx"
+	"github.com/danielbodart/gokit/sockdiag"
 	"github.com/danielbodart/portical/internal/systemd"
 	"github.com/danielbodart/portical/internal/upnp"
 )
@@ -44,7 +45,7 @@ type Container struct {
 	// The system bus, from the environment.
 	Bus func(env map[string]string) (systemd.Bus, error)
 	// Listening sockets and their cgroups, for `published` on a unit.
-	Sockets systemd.SocketLister
+	Sockets sockdiag.Lister
 	// Unit files, rooted at /.
 	Files fs.FS
 	// The kernel's ephemeral port range, which `published` skips for UDP.
@@ -95,7 +96,7 @@ func (c *Container) Wire() {
 		c.Bus = systemd.SystemBus
 	}
 	if c.Sockets == nil {
-		c.Sockets = systemd.Kernel()
+		c.Sockets = sockdiag.Kernel()
 	}
 	if c.Files == nil {
 		c.Files = os.DirFS("/")

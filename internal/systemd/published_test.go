@@ -9,6 +9,7 @@ import (
 	"testing"
 	"testing/fstest"
 
+	"github.com/danielbodart/gokit/sockdiag"
 	"github.com/danielbodart/portical/internal/model"
 )
 
@@ -18,9 +19,9 @@ const host = "192.168.1.5"
 // itself, and the fixture was captured in - into what the kernel lister
 // returns, so the development host's real sockets can still be the test data.
 // The cgroup id is made up, the path is ss's.
-func ss(t *testing.T, text string) []Listener {
+func ss(t *testing.T, text string) []sockdiag.Listener {
 	t.Helper()
-	var listeners []Listener
+	var listeners []sockdiag.Listener
 	for _, line := range strings.Split(text, "\n") {
 		fields := strings.Fields(line)
 		if len(fields) < 5 || (fields[0] != "tcp" && fields[0] != "udp") {
@@ -37,7 +38,7 @@ func ss(t *testing.T, text string) []Listener {
 		if address == "*" {
 			address = "::"
 		}
-		listener := Listener{Protocol: model.Protocol(fields[0]), Address: netip.MustParseAddr(address), Port: port}
+		listener := sockdiag.Listener{Protocol: sockdiag.Protocol(fields[0]), Address: netip.MustParseAddr(address), Port: port}
 		if scope != "" {
 			listener.Interface = 1
 		}
@@ -56,7 +57,7 @@ func ss(t *testing.T, text string) []Listener {
 	return listeners
 }
 
-func developmentHost(t *testing.T) []Listener {
+func developmentHost(t *testing.T) []sockdiag.Listener {
 	t.Helper()
 	text, err := os.ReadFile("testdata/ss-host.txt")
 	if err != nil {
@@ -65,7 +66,7 @@ func developmentHost(t *testing.T) []Listener {
 	return ss(t, string(text))
 }
 
-func open(listeners []Listener) *sockets {
+func open(listeners []sockdiag.Listener) *sockets {
 	return &sockets{listeners: listeners, low: defaultEphemeralLow, high: defaultEphemeralHigh}
 }
 

@@ -6,6 +6,8 @@ import (
 	"io/fs"
 	"sync"
 	"testing/fstest"
+
+	"github.com/danielbodart/gokit/sockdiag"
 )
 
 // fakeSystemd is systemd as an object: units are started and stopped by
@@ -206,17 +208,17 @@ func (f *files) Open(name string) (fs.File, error) {
 // fakeSockets is a fixed list of listeners, counting how often it was asked.
 type fakeSockets struct {
 	mu        sync.Mutex
-	listeners []Listener
+	listeners []sockdiag.Listener
 	asked     int
 }
 
-func (s *fakeSockets) Set(listeners []Listener) {
+func (s *fakeSockets) Set(listeners []sockdiag.Listener) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.listeners = listeners
 }
 
-func (s *fakeSockets) Listening(ctx context.Context) ([]Listener, error) {
+func (s *fakeSockets) Listening(ctx context.Context) ([]sockdiag.Listener, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.asked++

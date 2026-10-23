@@ -13,10 +13,11 @@ import (
 	"testing/fstest"
 	"time"
 
-	"github.com/danielbodart/portical/internal/clock"
+	"github.com/danielbodart/gokit/clock"
+	"github.com/danielbodart/gokit/httpx"
+	"github.com/danielbodart/gokit/sockdiag"
 	"github.com/danielbodart/portical/internal/docker"
 	"github.com/danielbodart/portical/internal/fakes"
-	"github.com/danielbodart/portical/internal/httpx"
 	"github.com/danielbodart/portical/internal/model"
 	"github.com/danielbodart/portical/internal/systemd"
 	"github.com/danielbodart/portical/internal/version"
@@ -97,7 +98,7 @@ func (w *world) container(args ...string) *Container {
 			return fakes.HostAddress
 		},
 		Bus:       func(map[string]string) (systemd.Bus, error) { return w.systemd, nil },
-		Sockets:   systemd.SocketListerFunc(func(context.Context) ([]systemd.Listener, error) { return nil, nil }),
+		Sockets:   sockdiag.ListerFunc(func(context.Context) ([]sockdiag.Listener, error) { return nil, nil }),
 		Files:     files,
 		Ephemeral: func() (int, int, error) { return 32768, 60999, nil },
 		MountInfo: func() ([]byte, error) { return []byte(w.mountinfo), nil },

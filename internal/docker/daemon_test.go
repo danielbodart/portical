@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/danielbodart/portical/internal/clock"
+	"github.com/danielbodart/gokit/clock"
 	"github.com/danielbodart/portical/internal/daemon"
 	"github.com/danielbodart/portical/internal/fakes"
 	"github.com/danielbodart/portical/internal/upnp"

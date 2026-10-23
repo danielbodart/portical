@@ -15,12 +15,10 @@ buildGo127Module {
   pname = "portical";
   inherit version src;
 
-  # godbus and the golang.org/x/sys it needs, as `go mod vendor` lays them
-  # out. Computed without a Nix daemon - `go mod vendor` into a copy of the
-  # tree, then `nix-hash --type sha256 --sri vendor` - so CI's nix job is the
-  # first real check of it. A go.sum change needs it recomputed: build once
-  # with lib.fakeHash and take the hash Nix reports.
-  vendorHash = "sha256-y+3dL8WEiN4PDHLX9/iNijS20wUheiJ+mZrM7af69G0=";
+  # godbus, gokit and the golang.org/x/sys godbus needs, as `go mod vendor`
+  # lays them out. A go.sum change needs it recomputed: build once with
+  # lib.fakeHash and take the hash Nix reports.
+  vendorHash = "sha256-oFrO+4NkrHEqy3FsgiH1BVIsGfv1YV/3+a/xrCJj70g=";
 
   env.CGO_ENABLED = 0;
   ldflags = [

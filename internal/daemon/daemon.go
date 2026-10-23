@@ -18,7 +18,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/danielbodart/portical/internal/clock"
+	"github.com/danielbodart/gokit/clock"
 	"github.com/danielbodart/portical/internal/model"
 	"github.com/danielbodart/portical/internal/reconcile"
 	"github.com/danielbodart/portical/internal/source"
