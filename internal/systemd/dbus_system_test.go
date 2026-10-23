@@ -47,14 +47,22 @@ func TestSystemBusListsTheHostsRunningUnits(t *testing.T) {
 		t.Fatalf("no running service with a unit file among %d units", len(units))
 	}
 
-	// dbus itself is running, or this could not have asked.
-	group, err := bus.ControlGroup(ctx, services[0].Name)
-	if err != nil {
-		t.Fatal(err)
+	// Not every active service has a cgroup: a oneshot that stays active after
+	// exiting has no processes left to hold one. But dbus itself is running,
+	// or this could not have asked, so at least one does.
+	for _, service := range services {
+		group, err := bus.ControlGroup(ctx, service.Name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if group != "" {
+			if !strings.HasPrefix(group, "/") {
+				t.Errorf("%s's cgroup is %q", service.Name, group)
+			}
+			return
+		}
 	}
-	if !strings.HasPrefix(group, "/") {
-		t.Errorf("%s's cgroup is %q", services[0].Name, group)
-	}
+	t.Errorf("none of %d running services has a cgroup", len(services))
 }
 
 func TestSystemBusSubscribesUntilCancelled(t *testing.T) {
