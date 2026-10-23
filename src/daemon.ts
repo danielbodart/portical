@@ -301,7 +301,13 @@ export class Portical {
           for await (const event of this.source.events(signal)) {
             if (signal.aborted) break;
             if (event.description) this.log(event.description);
-            await pass();
+            // Not awaited, so the stream keeps being read while a pass runs:
+            // everything that arrives meanwhile asks for the one pass queued
+            // behind it, rather than each waiting its turn for a pass of its
+            // own. Waiting here turned a boot or a rebuild restarting dozens
+            // of units into dozens of passes in a row, each walking the
+            // router's table.
+            void pass();
           }
         } catch {
           // Swallowed on purpose: reopen below unless we are shutting down.

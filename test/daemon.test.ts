@@ -2,7 +2,9 @@ import { beforeEach, describe, expect, test } from "bun:test";
 import { getEventListeners } from "node:events";
 import { DEFAULTS, Portical, type Options } from "../src/daemon.ts";
 import { DockerSource } from "../src/docker.ts";
+import { Channel } from "../src/channel.ts";
 import { FORWARD_LABEL, NETWORK_LABEL } from "../src/resolve.ts";
+import type { Desired, Source, SourceEvent } from "../src/source.ts";
 import { UpnpGateway } from "../src/upnp.ts";
 import { container, FakeDocker, network } from "./fakes/docker.ts";
 import { FakeGateway, type Quirks } from "./fakes/gateway.ts";
@@ -402,6 +404,38 @@ describe("run", () => {
     await Bun.sleep(20);
 
     expect(router.mappings).toEqual([]);
+
+    controller.abort();
+    await running;
+  });
+
+  test("collapses a burst of events into one pass behind the one running", async () => {
+    let passes = 0;
+    const stream = new Channel<SourceEvent>();
+    const source: Source = {
+      async desired(): Promise<Desired> {
+        passes++;
+        await Bun.sleep(20);
+        return { forwards: [], warnings: [] };
+      },
+      async *events(signal) {
+        signal.addEventListener("abort", () => stream.end());
+        yield* stream;
+      },
+    };
+    const router = new FakeGateway();
+    const gateway = await UpnpGateway.at(router.handler, router.rootUrl);
+    const daemon = new Portical(source, gateway, { ...DEFAULTS, hostAddress: HOST, interval: 3600 }, () => {});
+    const controller = new AbortController();
+    const running = daemon.run(controller.signal);
+    await Bun.sleep(5);
+    expect(passes).toBe(1);
+
+    for (let index = 0; index < 30; index++) stream.push({});
+    await Bun.sleep(100);
+
+    // The first event's pass, and one more for everything after it.
+    expect(passes).toBe(3);
 
     controller.abort();
     await running;
