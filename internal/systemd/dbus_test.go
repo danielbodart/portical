@@ -325,6 +325,28 @@ func TestDBusSubscribesAndTurnsSignalsIntoChangesUntilCancelled(t *testing.T) {
 	fakes.Await(t, "the connection to close", func() bool { return fake.Connected() == 0 })
 }
 
+// A pass started mid-reload would find units not yet reloaded still marked as
+// needing it, and warn about a reload already under way.
+func TestDBusHoldsUnitChangesUntilAReloadIsDone(t *testing.T) {
+	fake := newFakeBus(t)
+	fake.Answer(systemdAnswers)
+	bus := fake.Bus(t)
+	changes, done, stop := watch(t, fake, bus)
+
+	fake.Signal(managerPath, "org.freedesktop.systemd1.Manager", "Reloading", true)
+	fake.Signal(sshd, "org.freedesktop.DBus.Properties", "PropertiesChanged",
+		"org.freedesktop.systemd1.Unit", map[string]dbus.Variant{"ActiveState": dbus.MakeVariant("active")}, []string{})
+	fake.Signal(managerPath, "org.freedesktop.systemd1.Manager", "Reloading", false)
+	fake.Signal(sshd, "org.freedesktop.DBus.Properties", "PropertiesChanged",
+		"org.freedesktop.systemd1.Unit", map[string]dbus.Variant{"ActiveState": dbus.MakeVariant("inactive")}, []string{})
+
+	assertEqual(t, next(t, changes), Change{})
+	assertEqual(t, next(t, changes), Change{Unit: "sshd.service", State: "inactive"})
+
+	stop()
+	assertEqual(t, <-done, nil)
+}
+
 func TestDBusEndsTheWatchWithAnErrorWhenTheBusDrops(t *testing.T) {
 	fake := newFakeBus(t)
 	fake.Answer(systemdAnswers)

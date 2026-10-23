@@ -153,10 +153,12 @@ pkgs.testers.runNixOSTest {
         host.wait_until_succeeds("journalctl -u portical.service | grep 'Unit explicit.service inactive'")
 
     with subtest("a drop-in resetting the key removes its forward, on daemon-reload"):
+        # One command: a pass between writing the drop-in and the reload
+        # would rightly warn that the unit's files are newer than systemd's.
         host.succeed(
-            "mkdir -p /run/systemd/system/listener.service.d",
-            "printf '[Unit]\\nX-Portical-Forward=\\n' > /run/systemd/system/listener.service.d/off.conf",
-            "systemctl daemon-reload",
+            "mkdir -p /run/systemd/system/listener.service.d"
+            " && printf '[Unit]\\nX-Portical-Forward=\\n' > /run/systemd/system/listener.service.d/off.conf"
+            " && systemctl daemon-reload"
         )
         wait_for_mapping(9090, present=False)
 

@@ -229,7 +229,17 @@ func (b *DBus) Watch(ctx context.Context, notify func(Change)) error {
 		return ended(ctx, fmt.Errorf("subscribing to systemd: %w", describe(err)))
 	}
 
+	// Mid-reload, systemd says things about units as it reloads them, and a
+	// pass they started would read units it has yet to reach, still marked as
+	// needing the reload. The reload finishing starts a pass that reads them
+	// all afresh, so nothing is lost by waiting for it.
+	reloading := false
 	for signal := range signals {
+		if starting, ok := reloadSignal(signal); ok {
+			reloading = starting
+		} else if reloading {
+			continue
+		}
 		if change, ok := toChange(signal); ok {
 			notify(change)
 		}
@@ -261,12 +271,12 @@ func describe(err error) error {
 // unit's ActiveState, or a reload finishing. Everything else a unit says
 // about itself - and it says a lot - cannot change what it forwards.
 func toChange(signal *dbus.Signal) (Change, bool) {
-	switch {
-	case signal.Name == manager+".Reloading":
+	if starting, ok := reloadSignal(signal); ok {
 		// Sent true as the reload starts and false when it is done. Only the
 		// second is worth acting on: before it, the old configuration is live.
-		starting, ok := first[bool](signal.Body, 0)
-		return Change{}, ok && !starting
+		return Change{}, !starting
+	}
+	switch {
 
 	case signal.Name == propertiesIface+".PropertiesChanged" && strings.HasPrefix(string(signal.Path), unitPaths+"/"):
 		iface, _ := first[string](signal.Body, 0)
@@ -283,6 +293,15 @@ func toChange(signal *dbus.Signal) (Change, bool) {
 		return Change{Unit: unitName(string(signal.Path)[len(unitPaths)+1:]), State: value}, true
 	}
 	return Change{}, false
+}
+
+// reloadSignal is whether a signal is systemd's Reloading, and if so whether
+// the reload is starting rather than done.
+func reloadSignal(signal *dbus.Signal) (starting, ok bool) {
+	if signal.Name != manager+".Reloading" {
+		return false, false
+	}
+	return first[bool](signal.Body, 0)
 }
 
 func first[T any](body []any, index int) (T, bool) {
