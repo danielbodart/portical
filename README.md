@@ -214,6 +214,10 @@ services:
       - 'portical.upnp.forward=8000:80/tcp'
 ```
 
+`depends_on: portical` is no longer needed. Portical reconciles from the current
+state of Docker on every pass, so a container that starts first, or while Portical
+is down, is picked up regardless.
+
 ### NixOS
 
 The repository is a flake with a package and a NixOS module:
@@ -243,10 +247,6 @@ does not connect to the multicast search. `openFirewall = true` opens the intern
 port of every `portical.forward` term (not `published`, which is only known at run
 time). Other options: `interval`, `leaseDuration`, `renewWithin`, `steal`,
 `manageAll`, `cleanupOnExit`, `dockerSocket` and `extraArgs`.
-
-`depends_on: portical` is no longer needed. Portical reconciles from the current
-state of Docker on every pass, so a container that starts first, or while Portical
-is down, is picked up regardless.
 
 ## How it Works
 
