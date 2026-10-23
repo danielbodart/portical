@@ -214,8 +214,10 @@ func TestKernelLeavesOutConnectedSockets(t *testing.T) {
 	}
 	defer connected.Close()
 
+	// Without cgroupfs (Nix's build sandbox) the listing is still whole, only
+	// unable to say whose each socket is, which this test does not ask.
 	listeners, err := Kernel().Listening(ctx)
-	if err != nil {
+	if err != nil && !errors.Is(err, ErrUnknownCgroups) {
 		t.Fatal(err)
 	}
 	for _, address := range []net.Addr{client.LocalAddr(), connected.LocalAddr()} {
