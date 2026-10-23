@@ -1,0 +1,102 @@
+#!/bin/sh
+# The one place Portical's build is defined, so CI runs the same commands a
+# developer does: ./run <version|check|test|build|release|image> [args].
+set -eu
+
+cd "$(dirname "$0")"
+
+# The package the version is set in, at link time.
+VERSION_VAR=github.com/danielbodart/portical/internal/version.Version
+
+die() {
+  echo "Error: $*" >&2
+  exit 1
+}
+
+# The version, derived from the repository rather than stored in it.
+#
+# Only the major is committed, in MAJOR (a file, so that the flake reads the
+# same one), because only the major is a decision: it says this is the rewrite
+# and the shell script was v1, and moving it is something a person does
+# deliberately when compatibility breaks. The rest is a fact about the build,
+# so recording it in the tree would only create a number that can disagree with
+# what was published - a bump commit to forget, or a tag that says something
+# the artifact does not.
+#
+# Minor is the commit count, so it only ever goes up and names exactly one
+# commit. Patch is the CI run number, which separates two builds of the same
+# commit - a re-run, or a manual dispatch - and locally becomes a timestamp
+# instead, so a developer build sorts after CI's and is obviously not one.
+version() {
+  # Counted from HEAD, not from a branch name. On Actions the checkout is
+  # detached, so `git rev-parse --abbrev-ref HEAD` answers "HEAD", and
+  # GITHUB_REF_NAME on a pull request is "123/merge", which is not a rev at
+  # all. HEAD is the commit being built in every one of those cases.
+  if [ "$(git rev-parse --is-shallow-repository)" = true ]; then
+    die "this is a shallow clone, so the commit count is wrong and so is the version. In Actions, checkout with \`fetch-depth: 0\`."
+  fi
+  echo "$(cat MAJOR).$(git rev-list --count HEAD).${GITHUB_RUN_NUMBER:-$(date -u +%Y%m%d%H%M%S)}"
+}
+
+check() {
+  unformatted=$(gofmt -l .)
+  [ -z "$unformatted" ] || die "not gofmt'd: $unformatted"
+  go vet ./...
+}
+
+test() {
+  go test -count=1 "$@" ./...
+}
+
+# Static, so the one binary runs on any distribution, glibc or musl, and in an
+# empty image. The version reaches it as a link-time -X rather than a generated
+# file, so nothing is written into the tree; without one it says
+# "development", which is the truth about a `go run`.
+#
+# GOARM only means anything for arm, and is ignored otherwise; 7 is the Pi 2
+# onwards on 32-bit Raspberry Pi OS, and the armhf most ARM NAS boxes run.
+compile() {
+  CGO_ENABLED=0 GOOS=linux GOARCH="$2" GOARM=7 \
+    go build -trimpath -ldflags "-s -w -X $VERSION_VAR=$1" -o "$3" .
+}
+
+build() {
+  outfile=${1:-dist/portical}
+  v=$(version)
+  compile "$v" "$(go env GOARCH)" "$outfile"
+  echo "built $outfile $v"
+}
+
+# What a GitHub release carries: a binary per architecture, the systemd unit
+# that runs it, and their checksums, all in one directory for CI to upload as
+# they are. The names are what docs/systemd.md's install snippet and every
+# releases/latest/download link point at, so they stay put - x64 is Go's
+# amd64, under the name the first releases gave it.
+release() {
+  dir=${1:-dist/release}
+  v=$(version)
+  rm -rf "$dir"
+  mkdir -p "$dir"
+  compile "$v" amd64 "$dir/portical-linux-x64"
+  compile "$v" arm64 "$dir/portical-linux-arm64"
+  compile "$v" arm "$dir/portical-linux-armv7"
+  cp systemd/portical.service "$dir/"
+  (cd "$dir" && sha256sum portical-linux-x64 portical-linux-arm64 portical-linux-armv7 portical.service > SHA256SUMS)
+  echo "built $dir $v"
+}
+
+# The same image CI publishes, for every architecture, built locally.
+image() {
+  docker buildx build --platform linux/amd64,linux/arm64,linux/arm/v7 --build-arg VERSION="$(version)" \
+    --tag "${1:-danielbodart/portical:dev}" .
+}
+
+command=${1:-build}
+[ $# -gt 0 ] && shift
+case $command in
+  version|check|test|build|release|image) "$command" "$@" ;;
+  *)
+    echo "Error: '$command' is not a command. Try: version, check, test, build, release, image" >&2
+    exit 2
+    ;;
+esac

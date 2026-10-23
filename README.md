@@ -11,9 +11,12 @@ It was inspired by [Traefik Proxy](https://traefik.io/traefik/) autoconfiguratio
 ## Requirements
 - Some Docker containers or systemd services you want to expose to the internet
 - UPnP-enabled internet gateway (tested on Google Nest Wifi running OpenWRT)
-- 64-bit Linux, `amd64` or `arm64`. The published images and binaries are both, so
-  a Pi 4/5 or an ARM NAS gets the right one. 32-bit ARM (`armv7`, a Pi on 32-bit
-  Raspberry Pi OS) is not supported: Bun has no 32-bit target to compile to.
+- Linux on `amd64`, `arm64` or 32-bit `armv7`. The published images and binaries
+  cover all three, so a Pi - on 64-bit or 32-bit Raspberry Pi OS - or an ARM NAS
+  gets the right one. Each is a single static binary: no runtime, no libc, and
+  nothing else to install.
+- For `published` on a systemd unit, Linux 5.7 or later, whose socket diagnostics
+  say which cgroup a socket belongs to. Nothing else needs a recent kernel.
 
 ## Usage
 There are 2 parts to Portical:
@@ -132,7 +135,9 @@ problem with the service rather than with the forward.
 
 ## What changed in v2
 
-v2 is a rewrite from Bash to TypeScript running on [Bun](https://bun.sh).
+v2 is a rewrite from Bash to Go: one static binary, with no runtime and nothing to
+install alongside it. (Its first releases were TypeScript running on Bun; the Go
+port that replaced them reads the same configuration and behaves the same.)
 
 **Upgrading needs no changes.** Every v1 flag (`-r`, `-d`, `-l`, `-v`, `-f`), both
 environment variables, and all three commands (`update`, `poll`, `listen`) work as
@@ -164,7 +169,8 @@ need it - the image runs Portical by default.
   macvlan networks it ran *itself* in another container's network namespace.
   Portical now speaks the Docker Engine API and UPnP SOAP directly, so the image is
   a single binary, and Portical no longer needs to be able to launch containers.
-- **arm64 images**, which matters for the Pi and NAS boxes this tends to run on.
+- **ARM images and binaries**, 64-bit and 32-bit, which matters for the Pi and NAS
+  boxes this tends to run on.
 - **Discovery tries every reply**, not just the first, so a device that claims to
   be a gateway but forwards no ports no longer hides a working router.
 - **`--dry-run`, `list`, `--steal`, `--manage-all` and `--cleanup-on-exit`** are new.
@@ -176,20 +182,22 @@ of which are in v2, and to [@jhenkens](https://github.com/jhenkens), whose
 
 ## Development
 
+Portical is Go, and the standard library apart from one module:
+[godbus](https://github.com/godbus/dbus) for the systemd source's system bus.
+
 ```shell
-mise install     # installs the pinned Bun
-bun install
-bun run.ts test
-bun run.ts check   # typecheck
-bun run.ts build   # compiles a standalone binary into dist/
-bun run.ts release # the release's binaries, unit and checksums, into dist/release/
-bun run.ts image   # builds both architectures locally
+mise install       # installs the pinned Go
+./run test         # go test, every package
+./run check        # gofmt and go vet
+./run build        # a static binary for this machine, into dist/
+./run release      # every architecture's binary, the unit and checksums, into dist/release/
+./run image        # the image, for every architecture, locally
 nix build          # the Nix package, running the tests on the way
 nix flake check    # also the module check and the NixOS VM test (needs KVM)
 ```
 
-`run.ts` is the only place any of this is defined, so CI runs the same commands
-you do.
+`./run` is a POSIX shell script and the only place any of this is defined, so CI
+runs the same commands you do.
 
 ### Versions
 
@@ -202,28 +210,33 @@ image: 'danielbodart/portical:2.58.412'
 
 Every build that publishes an image also publishes a
 [GitHub release](https://github.com/danielbodart/portical/releases) of the same
-version, tagged `v2.58.412`, with the standalone binaries and the systemd unit.
+version, tagged `v2.58.412`, with the standalone binaries for `x64`, `arm64` and
+`armv7`, the systemd unit, and their `SHA256SUMS`.
 
 The number is derived from the repository rather than stored in it. Only the
-major is committed - in `package.json`, because that one is a decision: it says
-this is the rewrite and the shell script was v1, and it moves when
-compatibility breaks. The minor is the commit count, so it only goes up and
-names exactly one commit; the patch is the CI run number, which separates two
-builds of the same commit. Locally the patch becomes a timestamp, so a
-developer build sorts after CI's and is obviously not one.
+major is committed - in `MAJOR`, because that one is a decision: it says this is
+the rewrite and the shell script was v1, and it moves when compatibility breaks.
+The minor is the commit count, so it only goes up and names exactly one commit;
+the patch is the CI run number, which separates two builds of the same commit.
+Locally the patch becomes a timestamp, so a developer build sorts after CI's and
+is obviously not one.
 
 Nothing needs bumping to release, and there is no committed number that can
-disagree with what was published. `portical --version` reports it, every run
-logs it as its first line, and it is on the image as
-`org.opencontainers.image.version`. Running from source with no build step says
-`development`, which is the truth about that build.
+disagree with what was published. It reaches the binary at link time
+(`-ldflags -X .../internal/version.Version=...`), so nothing is generated into
+the tree. `portical --version` reports it, every run logs it as its first line,
+and it is on the image as `org.opencontainers.image.version`. `go run .` with no
+build step says `development`, which is the truth about that build.
 
-Everything that talks HTTP - the Docker Engine API and the gateway - goes through a
-single `(Request) => Promise<Response>` function type, so the tests replace both
-with in-memory implementations. There is no server, no port and no router involved:
-the fake gateway is a function, and it has switches for the ways real routers
-actually misbehave (truncating descriptions, downgrading leases, ending their
-mapping table with the wrong code). The bugs above have tests written against those.
+Everything that talks HTTP - the Docker Engine API over its socket and the
+gateway's SOAP - goes through an `http.RoundTripper`, so the tests replace both
+with `http.Handler`s reached through an adapter rather than a listener. There is
+no server, no port and no router involved: the fake gateway is a handler, and it
+has switches for the ways real routers actually misbehave (truncating
+descriptions, downgrading leases, ending their mapping table with the wrong code,
+refusing to overwrite a mapping that moved). The fake Docker streams its
+`/events` through the same adapter as a real socket would. The bugs above have
+tests written against those.
 
 ## Shutdown
 

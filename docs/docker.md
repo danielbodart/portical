@@ -18,8 +18,8 @@ The same image is published to two registries:
 
 Each carries `:latest` and an exact version, such as `:2.58.412`. The examples
 here use Docker Hub; `ghcr.io/danielbodart/portical` can be used in its place
-anywhere. Both are built for `amd64` and `arm64`, so a Pi 4/5 or an ARM NAS
-pulls the right one.
+anywhere. Both are built for `amd64`, `arm64` and 32-bit `arm/v7`, so a Pi or an
+ARM NAS pulls the right one, whichever operating system it runs.
 
 ## Part 1: Adding the `portical.upnp.forward` label
 
@@ -139,7 +139,8 @@ image: 'danielbodart/portical:2.58.412'
 
 The image reads Docker and nothing else. Reading systemd units from inside the
 container is not supported: it would need the host's system bus, the host's unit
-files at their own paths, and `ss` from iproute2, none of which a container has.
+files at their own paths, and the host's sockets and cgroups, none of which a
+container has.
 To forward systemd units as well as containers, run Portical natively with
 `--source systemd,docker` instead - see
 [Running Portical as a systemd service](systemd.md#docker-containers-too).

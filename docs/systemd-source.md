@@ -1,108 +1,101 @@
 # Forwarding for systemd units
 
 Portical was written to read its forwards off Docker container labels. Nothing
-underneath that depends on Docker: the rule grammar (`rules.ts`), the
-ownership rules (`model.ts`), the reconcile (`reconcile.ts`), the gateway
-(`upnp.ts`) and discovery (`discovery.ts`) only ever see `DesiredForward`s. This
+underneath that depends on Docker: the rule grammar (`internal/rules`), the
+ownership rules (`internal/model`), the reconcile (`internal/reconcile`), the
+gateway and discovery (`internal/upnp`) only ever see `DesiredForward`s. This
 document is the design for a second place forwards can come from: systemd
 units, declared with a key in the unit file, so that a service that runs
 natively on the host - NixOS especially - gets the same forwards a labelled
 container does.
 
-Status: implemented - `src/source.ts` (the seam and `combine()`),
-`src/systemd.ts`, `src/dbus.ts`, and the flake in `flake.nix` and `nix/`. Where
-the build proved the plan wrong, this document has been corrected to match
-what was built, and the open questions at the end are answered.
+Status: implemented - `internal/source` (the seam and `Combine`),
+`internal/systemd`, and the flake in `flake.nix` and `nix/`. Where the build
+proved the plan wrong, this document has been corrected to match what was
+built, and the open questions at the end are answered.
 
 ## The Source seam
 
-```ts
-// src/source.ts
-export interface Desired {
-  readonly forwards: readonly DesiredForward[];
-  readonly warnings: readonly string[];
+```go
+// internal/source
+type Desired struct {
+	Forwards []model.DesiredForward
+	Warnings []string
 }
 
-export interface SourceEvent {
-  readonly description?: string;
+type Event struct {
+	Description string // "" asks for a pass without a log line
 }
 
-export interface Source {
-  desired(): Promise<Desired>;
-  events(signal: AbortSignal): AsyncIterable<SourceEvent>;
+type Source interface {
+	Desired(ctx context.Context) (Desired, error)
+	Events(ctx context.Context, notify func(Event)) error
 }
 ```
 
-`Portical` takes a `Source` where it used to take a `DockerClient`:
+The daemon takes a `Source` where it once took a Docker client:
 
-```ts
-new Portical(source, gateway, options, log, asContainer)
+```go
+daemon.New(daemon.Deps{Source: source, Gateway: gateway, Options: options, Log: log, AsContainer: asContainer})
 ```
 
 The contract, which both sources keep:
 
-- **`desired()` is complete or it rejects.** Removals are derived from absence,
+- **`Desired` is complete or it fails.** Removals are derived from absence,
   so a partial answer tears down the forwards that were not seen. A source that
   fails to read anything it needs fails the pass, and the daemon logs it and
-  tries again on the next tick. This is the same rule `once()` already followed
+  tries again on the next tick. This is the same rule `Once` already followed
   for the container list.
 - **Warnings are returned, not logged.** The daemon prefixes and logs them,
   which keeps sources free of a logger and lets tests read them.
 - **Events only mean "look again".** The daemon does not read anything out of
   an event except the optional line for the log. Every event triggers a pass,
-  bursts collapse into one pass through the existing queue in `run()`, and the
-  interval covers anything a stream missed. A source with no useful stream at
-  all could return an empty iterable and be correct, only slower.
-- **`events()` may end or throw.** `run()` already reopens it after
-  `reconnectBackoff`, and that loop is unchanged.
-- **`description` is optional.** A source that has to listen to everything to
+  bursts collapse into one pass through the queue in `Run`, and the interval
+  covers anything a stream missed. A source with no useful stream at all could
+  block until cancelled and be correct, only slower.
+- **`Events` may return early**, with an error or without. `Run` reopens it
+  after `ReconnectBackoff`, and that loop is the same for every source.
+- **`Description` is optional.** A source that has to listen to everything to
   catch what it cares about can ask for a pass without adding a log line.
-
-`Desired` is the old `Resolution` from `resolve.ts`, which is now an alias of
-it.
 
 ### How Docker maps onto it
 
-`DockerSource` (in `docker.ts`) wraps a `DockerClient` and the resolve options
-(`label`, `networkLabel`, `hostAddress`):
+`docker.Source` wraps a `docker.Client` and the resolve options (`Label`,
+`NetworkLabel`, `HostAddress`):
 
-| Source        | Docker                                                         |
-|---------------|----------------------------------------------------------------|
-| `desired()`   | `resolve(await client.containers(label), options)`             |
-| `events()`    | `client.events(label, signal)`, each as `Container <name> <action>` |
+| Source    | Docker                                                         |
+|-----------|----------------------------------------------------------------|
+| `Desired` | `docker.Resolve(client.Containers(ctx, label), options)`       |
+| `Events`  | `client.Events(ctx, label, ...)`, each as `Container <name> <action>` |
 
-`DockerClient` itself is unchanged and stays narrower than a source: the relay
-(`namespace.ts`) still needs it to run a container in another's network, which
-has nothing to do with deciding what to forward. `asContainer` stays a
-constructor argument of `Portical`, and only Docker forwards with a
-`container` target ever reach it.
-
-No behaviour changed in the refactor: the same passes, warnings and event log
-lines, and the 180 existing tests pass with only their harnesses wrapping
-`FakeDocker` in a `DockerSource`.
+The client itself stays narrower than a source: the relay (`namespace.go`)
+still needs it to run a container in another's network, which has nothing to do
+with deciding what to forward. `AsContainer` stays a dependency of the daemon,
+and only Docker forwards with a `container` target ever reach it.
 
 ### Several sources at once
 
-`combine(sources: readonly Source[]): Source` (in `source.ts`):
+`source.Combine(sources ...Source) (Source, error)`:
 
-- `desired()` is `Promise.all` over the sources, so one failing fails the pass,
-  for the reason above. Forwards are concatenated in the order the sources
-  were named.
-- Two sources asking for the same gateway slot (`identity()`, protocol and
+- `Desired` asks every source, so one failing fails the pass, for the reason
+  above. Forwards are concatenated in the order the sources were named.
+- Two sources asking for the same gateway slot (`Rule.Identity()`, protocol and
   external port) would rewrite each other every pass. The first one named
-  wins, the same "first term wins" rule `rules.ts` uses within a label, and the
-  loser is reported as a warning naming both owners.
-- `events()` merges the streams. If one throws, the merged stream throws and
-  `run()` reopens all of them; each reopen is cheap and the interval pass
-  covers the gap.
+  wins, the same "first term wins" rule `rules.Parse` uses within a label, and
+  the loser is reported as a warning naming both owners.
+- `Events` merges the streams. If one returns, the merged stream returns and
+  `Run` reopens all of them; each reopen is cheap and the interval pass covers
+  the gap.
+- None is refused: nothing to combine would want nothing, and take every
+  forward down.
 
 One Portical should run every source on a host. Two Porticals on the same
 host, say a container for Docker and a native one for systemd, both forward to
 the same host address, so each sees the other's mappings as its own, finds nothing
-asking for them, and removes them. `managedAddresses` exists to stop exactly
+asking for them, and removes them. `ManagedAddresses` exists to stop exactly
 that between hosts, and it cannot tell two instances on one host apart. The
-README will say so, and the NixOS module will offer `sources = [ "systemd"
-"docker" ]` rather than a second service.
+README says so, and the NixOS module offers `sources = [ "systemd" "docker" ]`
+rather than a second service.
 
 ## The systemd source
 
@@ -115,7 +108,7 @@ X-Portical-Forward=19133:19132/udp,published
 ```
 
 The value is exactly the label grammar: `ext[:int][/proto]` terms and
-`published`, comma separated, parsed by the same `parseLabel`. systemd ignores
+`published`, comma separated, parsed by the same `rules.Parse`. systemd ignores
 any key starting `X-`, so the declaration is harmless on a host without
 Portical, and `systemd-analyze verify` does not complain.
 
@@ -186,7 +179,7 @@ Files are parsed the way systemd parses them, as far as this key needs:
 - A line ending in `\` continues on the next line, joined with a space. A
   comment line inside a continuation is skipped, as systemd does.
 - `Key=Value`, whitespace around both trimmed. Keys are case sensitive.
-- No specifier expansion. A term containing `%` falls out of `parseLabel` as an
+- No specifier expansion. A term containing `%` falls out of `rules.Parse` as an
   unrecognised rule and is reported like any other bad term. (`%i` for
   template instances is an open question below.)
 
@@ -207,7 +200,7 @@ Assignments behave like a systemd list setting such as `ExecStartPre=` or
   followed by new values replaces them.
 
 The terms gathered from every assignment are joined and parsed once with
-`parseLabel`, so duplicate slots collapse first-term-wins exactly as within one
+`rules.Parse`, so duplicate slots collapse first-term-wins exactly as within one
 label, and errors are reported as `<unit>: <error>`.
 
 The files are what is on disk now, not what systemd loaded at the last
@@ -217,8 +210,8 @@ systemd has not loaded yet.
 
 ### What a unit's forward points at
 
-Always this host: target `{ kind: "host" }`, `internalClient` the address
-`addressFacing` works out from the gateway's control URL, as for a bridge or
+Always this host: target `model.Host`, `InternalClient` the address
+`upnp.AddressFacing` works out from the gateway's control URL, as for a bridge or
 host-networked container. There is no relay and no macvlan case. The unit name
 in full (`minecraft.service`) is what the description carries, in the existing
 format: `portical: (25565:25565/tcp) minecraft.service`.
@@ -227,50 +220,57 @@ format: `portical: (25565:25565/tcp) minecraft.service`.
 
 For a container, `published` means "the ports Docker publishes on the host".
 For a unit it means **the ports the unit is listening on**, found from the
-kernel's socket table with the socket's cgroup:
+kernel's socket table with each socket's cgroup.
 
-```sh
-ss -Hlntu -e
-```
+The kernel is asked directly, over `NETLINK_SOCK_DIAG` - the interface `ss`
+itself uses, so nothing has to be installed, run or parsed. Four `inet_diag`
+dumps, TCP in `LISTEN` and UDP bound but unconnected, each for IPv4 and IPv6,
+asking for the socket's cgroup id and its `v6only` flag. They are made once per
+pass, and only when some active unit asks for `published`. All of it is the
+standard library's `syscall` package, with the request and reply layouts
+written out in `internal/systemd/netlink.go`.
 
-run once per pass, and only when some active unit asks for `published`. Each
-line carries the socket's `cgroup:` - the cgroup of whoever created it - which
-is matched against the unit:
+The cgroup id is the inode of the cgroup's directory in the cgroup2 file
+system, so the ids are put back to paths by walking `/sys/fs/cgroup` (or its
+`unified/` on a host still mounting the v1 hierarchies), as `ss` does. On a
+32-bit kernel the id carries a generation above the inode, in its high 32
+bits, so there a socket is matched by the id's low half. Each
+socket's cgroup - the cgroup of whoever created it - is then matched against
+the unit:
 
 - A socket whose cgroup is the unit's `ControlGroup`, or beneath it
   (`<ControlGroup>/...`, for services that put workers in sub-cgroups).
 - A socket whose cgroup is the `ControlGroup` of a unit in the unit's
   `TriggeredBy`. Sockets for socket activation are made by PID 1 on behalf of
   the `.socket` unit, and are charged to that unit's cgroup - on the
-  development host, `systemd-resolved`'s own sockets show as
-  `cgroup:/system.slice/systemd-resolved.service`, but a socket-activated one
-  shows as `cgroup:/system.slice/frisket-dns.socket`. A `.socket` unit can
-  carry the key itself, too, and matches by its own cgroup.
+  development host, `systemd-resolved`'s own sockets are in
+  `/system.slice/systemd-resolved.service`, but a socket-activated one is in
+  `/system.slice/frisket-dns.socket`. A `.socket` unit can carry the key
+  itself, too, and matches by its own cgroup.
 
 Only binds that the gateway's traffic could reach count:
 
-- `0.0.0.0`, `*`, and `[::]` unless `ss` marks it `v6only:1` (with
-  Linux's default `bindv6only=0` an IPv6 wildcard takes IPv4 too; `ss -e`
-  prints `v6only:1` on the sockets that do not), or the host address itself.
-- Not loopback, link-local, other specific addresses, or interface-scoped
-  binds (`%lo`).
+- `0.0.0.0`, and `::` unless the socket is `v6only` (with Linux's default
+  `bindv6only=0` an IPv6 wildcard takes IPv4 too), or the host address itself.
+- Not loopback, link-local, other specific addresses, or sockets bound to an
+  interface (`127.0.0.53%lo`).
 
 Each surviving socket becomes the rule `port:port/protocol`, as Docker's
 published ports do, and explicit terms win any collision with them.
 
-Caveats, which the README will carry:
+Caveats, which the README carries:
 
-- **UDP is guesswork.** `-l` lists every bound, unconnected UDP socket, which
+- **UDP is guesswork.** Every bound, unconnected UDP socket is listed, which
   includes client sockets a service opened to talk out - a resolver, a game
   server's query to a master list. Those sit on ephemeral ports, so UDP
   sockets inside `/proc/sys/net/ipv4/ip_local_port_range` are left out. A UDP
   server that does bind in that range has to be named explicitly.
 - **A late listener is caught by the interval, not an event.** systemd says
   nothing when a running service opens a port.
-- **It needs the socket's cgroup in `sock_diag`** - Linux 5.7 and iproute2
-  5.9 or later. Where `ss` prints no `cgroup:` at all, `published` resolves
-  to nothing for every unit and the pass warns once; `ss` failing to run fails
-  the pass.
+- **It needs the socket's cgroup in `sock_diag`** - Linux 5.7 or later. Where
+  the kernel reports no cgroup for any socket, or there is no cgroup2 file
+  system to look the ids up in, `published` resolves to nothing for every unit
+  and the pass warns once; failing to list the sockets at all fails the pass.
 
 Explicit terms are the recommended form; `published` is a convenience.
 
@@ -292,14 +292,16 @@ they announce that matters also moves a unit's `ActiveState`.
 
 systemd sends `ActiveState` with every change to *any* of a unit's
 properties, whether or not the state moved - seen on the development host, a
-unit starting produces several signals all saying `active`. So the client
-keeps the last state it saw per unit and passes a signal on only when the
-state differs, with the state it moved from (`previous`, absent the first
-time a unit is seen on this stream). Any unit can start carrying the key, so
-every such event asks for a pass, but only a unit that has declared forwards
-at some point this run, reaching `active`, `inactive` or `failed` from a state
-it was seen in, gets a log line (`Unit minecraft.service inactive`); the rest
-come through without a description. The set of declaring units never shrinks:
+unit starting produces several signals all saying `active`. The bus passes
+them all on as `Change{Unit, State}`, a plain translation of the signal, and
+the source keeps the last state it saw per unit on this stream, acting only
+when the state differs from it. A new stream starts knowing nothing, so its
+first word on a unit is where the unit is, not that it moved. Any unit can
+start carrying the key, so every such event asks for a pass, but only a unit
+that has declared forwards at some point this run, reaching `active`,
+`inactive` or `failed` from a state it was seen in, gets a log line
+(`Unit minecraft.service inactive`); the rest come through without a
+description. The set of declaring units never shrinks:
 a stopping unit drops out of the pass its first event triggers, so a set
 rebuilt each pass would leave out exactly the line explaining why its forward
 went.
@@ -307,54 +309,52 @@ went.
 As for Docker, the stream is opened after the first pass, so a unit that
 changes between the two is caught by the interval rather than an event.
 
-The bus dropping ends the stream with an error, and `run()` reconnects as it
+The bus dropping ends the stream with an error, and `Run` reconnects as it
 does for Docker. If the bus cannot be reached at all the interval still
-reconciles - but `desired()` needs the bus too, so in practice the passes
+reconciles - but `Desired` needs the bus too, so in practice the passes
 report the error until it is back.
 
 `busctl monitor` is not an option: it needs `BecomeMonitor`, which an
 unprivileged user is refused ("Access denied", checked). `busctl call` would
-work for `desired()` but costs a process per call.
+work for `Desired` but costs a process per call.
+
 
 ### The D-Bus client
 
-A small hand-written client over `/run/dbus/system_bus_socket`, mirroring
-`DockerClient`:
+[godbus](https://github.com/godbus/dbus), Portical's one module outside the
+standard library, behind an interface no wider than the source needs:
 
-```ts
-export interface Unit {
-  readonly name: string;
-  readonly fragmentPath: string;
-  readonly dropInPaths: readonly string[];
-  readonly triggeredBy: readonly string[];
-  readonly needDaemonReload: boolean;
+```go
+// internal/systemd
+type Unit struct {
+	Name             string
+	FragmentPath     string
+	DropInPaths      []string
+	TriggeredBy      []string
+	NeedDaemonReload bool
 }
 
-export interface SystemdEvent {
-  readonly unit?: string;
-  readonly state?: string;
-  readonly previous?: string;
+type Change struct {
+	Unit, State string // both "" for a finished Reloading
 }
 
-export interface SystemdClient {
-  units(): Promise<Unit[]>;
-  controlGroup(unit: string): Promise<string | undefined>;
-  events(signal: AbortSignal): AsyncIterable<SystemdEvent>;
+type Bus interface {
+	Units(ctx context.Context) ([]Unit, error)
+	ControlGroup(ctx context.Context, unit string) (string, error)
+	Watch(ctx context.Context, notify func(Change)) error
 }
 ```
 
-`DbusSystemdClient` implements it: `AUTH EXTERNAL` with the uid in hex, `Hello`,
-then method calls and signals in little-endian wire format. Marshalling needs
-only `s`, `o`, `b`, `u` and `as`; unmarshalling is a general signature-driven
-reader, since `GetAll` returns every type systemd has. That is a few hundred
-lines, but it keeps Portical at zero runtime dependencies, which is what keeps
-the Nix build a plain `bun build` with no dependency derivation at all.
-`dbus-next` is the alternative if it works under Bun; see the open questions.
+`DBus` implements it over the system bus at `DBUS_SYSTEM_BUS_ADDRESS`, or
+`/run/dbus/system_bus_socket`; only `unix:` addresses are taken. It is thin:
+the calls above and the matches for the two signals, with godbus doing the
+authentication and the wire format. The `GetAll` calls overlap on the one
+connection, at most `InFlight` (32) at a time.
 
-`SystemdSource` takes a `SystemdClient` and a `Host` - `read(path)` (cached by
-inode, size and mtime in the real one), `listeners()` (the `ss` output) and
-`ephemeralPorts()` - so every part of it can be driven by a fake. A pass on the
-development host, 339 active units, takes about 140 ms.
+`systemd.NewSource` takes a `Bus`, a `SocketLister` (`Kernel()` for the real
+one), an `fs.FS` rooted at `/` for the unit files (cached by path, inode, size
+and mtime) and a function for the ephemeral port range, so every part of it can
+be driven by a fake.
 
 ## Command line
 
@@ -367,28 +367,25 @@ development host, 339 active units, takes about 140 ms.
 anything with the Docker source. Without it, Portical does not connect to
 Docker at all, and does not look for its own image.
 
-The usage line becomes "UPnP port forwarding for Docker containers and systemd
-units", and "Watching for container changes" becomes "Watching for changes".
+The usage line is "UPnP port forwarding for Docker containers and systemd
+units", and "Watching for container changes" became "Watching for changes".
 
 ## Nix
 
 ### Flake
 
-`flake.nix` with `nixpkgs` (unstable, whose Bun is 1.4.2, the version
-`mise.toml` pins) as its only input, for `x86_64-linux` and `aarch64-linux`.
-The pieces are in `nix/`: `package.nix`, `module.nix`, `module-check.nix` and
-`vm-test.nix`.
+`flake.nix` with `nixpkgs` (unstable, for `buildGo127Module`: go.mod says
+`go 1.27`, and the default `buildGoModule` there is still Go 1.26) as its only
+input, for `x86_64-linux` and `aarch64-linux`. The pieces are in `nix/`:
+`package.nix`, `module.nix`, `module-check.nix` and `vm-test.nix`.
 
-- `packages.<system>.default` - `bun build --compile` of `src/main.ts`, as
-  `run.ts build` does, with `PORTICAL_VERSION` defined from `package.json`'s
-  major and the flake's `lastModifiedDate`/`shortRev`. With no runtime
-  dependencies there is nothing to fetch, so it builds in the sandbox from the
-  source alone. A compiled Bun binary is Bun with the bundle appended, so
-  `dontStrip` and `dontPatchELF`: stripping or rewriting it loses the bundle.
-  Wrapped with `makeWrapper` to put `iproute2` on `PATH` for `ss`. The
-  compiled binary works as built; no `bun run` fallback was needed. `bun
-  test` runs as the package's `checkPhase`.
-- `checks.<system>` - the package (and so `bun test`); the module evaluation
+- `packages.<system>.default` - the same static `go build` as `./run build`,
+  with the version from `MAJOR`, the flake's commit count and its
+  `lastModifiedDate` linked in with `-X`. godbus is vendored by the build's
+  fixed-output `vendorHash`. Nothing is wrapped and nothing goes on `PATH`:
+  `published` asks the kernel itself. `go test` runs as the package's check
+  phase.
+- `checks.<system>` - the package (and so `go test`); the module evaluation
   check; the VM test.
 - `nixosModules.default`.
 
@@ -446,20 +443,20 @@ The service:
 - `DynamicUser = true`, no capabilities (`CapabilityBoundingSet = ""`),
   `NoNewPrivileges`.
 - `RestrictAddressFamilies = [ "AF_INET" "AF_INET6" "AF_UNIX" "AF_NETLINK" ]`,
-  for the gateway and SSDP, the system bus, and `ss`'s `sock_diag`.
+  for the gateway and SSDP, the system bus, and `published`'s `NETLINK_SOCK_DIAG`.
 - `ProtectSystem = "strict"`, `ProtectHome`, `PrivateTmp`, `PrivateDevices`,
   `ProtectKernelTunables`, `ProtectKernelModules`, `ProtectKernelLogs`,
-  `ProtectControlGroups` (read-only is enough: `ss` only reads cgroupfs to name
-  a cgroup), `ProtectClock`, `ProtectHostname`, `ProtectProc = "invisible"`,
-  `RestrictNamespaces`, `RestrictRealtime`, `RestrictSUIDSGID`,
-  `LockPersonality`, `SystemCallArchitectures = "native"`, `SystemCallFilter =
-  [ "@system-service" "~@privileged" ]`, `UMask = "0077"`. The VM test runs
+  `ProtectControlGroups` (read-only is enough: `published` only reads
+  `/sys/fs/cgroup` to name a cgroup), `ProtectClock`, `ProtectHostname`,
+  `ProtectProc = "invisible"`, `RestrictNamespaces`, `RestrictRealtime`,
+  `RestrictSUIDSGID`, `LockPersonality`, `SystemCallArchitectures = "native"`,
+  `SystemCallFilter = [ "@system-service" "~@privileged" ]`, `UMask = "0077"`,
+  and `MemoryDenyWriteExecute`, since a Go binary has no JIT. The VM test runs
   under all of it, `published` included.
-- Not `~@resources`, which forbids calls a JavaScript runtime may reasonably
-  make for its own threads, for no gain here. Not `PrivateUsers`: it would
-  leave the `docker` group unmapped.
-- Not `MemoryDenyWriteExecute`: Bun's JIT needs writable executable memory.
-  Not `PrivateNetwork`: the whole point is the LAN.
+- Not `~@resources`, which forbids calls a runtime may reasonably make for its
+  own threads, for no gain here. Not `PrivateUsers`: it would leave the
+  `docker` group unmapped.
+- Not `PrivateNetwork`: the whole point is the LAN.
 - The system bus needs nothing extra: systemd's bus policy already lets any
   user call `ListUnitsByPatterns`, `Get`/`GetAll` and `Subscribe`. The unit
   files live in `/etc`, `/run` and `/nix/store`, all readable under
@@ -503,8 +500,10 @@ asserting the rendered unit text, the service's `ExecStart` and what
 
 ## Test plan
 
-All in-memory, in the style of the existing tests, with captured real output as
-fixtures.
+All in memory, in the style of the rest of the tests: fakes behind the same
+interfaces the real things implement, with captured real output as fixtures.
+The few tests that touch the real host - the kernel's sockets, the system bus -
+skip where there is none, as in Nix's build sandbox.
 
 - **Unit file parser** - sections, both comment characters, continuations
   (with a comment inside one), key in `[Unit]`, in `[Service]` and in an
@@ -512,32 +511,35 @@ fixtures.
   assignment resetting within a file and across files.
 - **Drop-in ordering** - fragment then drop-ins in the given order; a drop-in
   that resets; one that adds; one that resets and replaces.
-- **Listener parser** - fixture `ss -Hlntu -e` output captured from a real host:
-  wildcard IPv4 and IPv6, loopback and `%lo` dropped, the host address kept,
-  cgroup equal, beneath, and via a `TriggeredBy` socket unit, ephemeral UDP
-  dropped, output with no `cgroup:` at all (warns, resolves nothing).
-- **`SystemdSource.desired()`** - with a `FakeSystemd` (units as plain objects),
-  a map for the filesystem and canned `ss` text: an active unit's forwards,
-  an inactive unit wanting nothing, `published` alongside explicit terms with
-  explicit winning, `NeedDaemonReload` warning, an unreadable fragment
-  rejecting the whole pass.
-- **The daemon, end to end** - `Portical` with a `SystemdSource` over the fakes
-  and the existing `FakeGateway`: a unit gets its forward pointing at the host
+- **Which sockets count** - the development host's real sockets, captured once
+  as `ss -Hlntu -e` output in `internal/systemd/testdata` and read into
+  `Listener`s by the test: wildcard IPv4 and IPv6, `v6only`, loopback and
+  `%lo` dropped, the host address kept, cgroup equal, beneath, and via a
+  `TriggeredBy` socket unit, ephemeral UDP dropped, no cgroup reported at all
+  (warns, resolves nothing).
+- **The netlink lister** - the reply parser against built messages, and the
+  real kernel: a TCP and a UDP listener this test opens, found with this
+  process's own cgroup; connected sockets left out; no cgroup2 file system
+  still listing the sockets, without their cgroups.
+- **`systemd.Source`** - with a fake systemd (units as plain values), an
+  in-memory `fs.FS` and a fake lister: an active unit's forwards, an inactive
+  unit wanting nothing, `published` alongside explicit terms with explicit
+  winning, `NeedDaemonReload` warning, an unreadable fragment failing the
+  whole pass.
+- **The daemon, end to end** - the daemon with a `systemd.Source` over the
+  fakes and the fake gateway: a unit gets its forward pointing at the host
   address, stopping it removes it, a reset drop-in removes it, a unit event
   reconciles without waiting for the interval, a dropped event stream
-  reconnects (the same cases `run` already has for Docker).
-- **`combine()`** - forwards from both; one source failing fails the pass and
+  reconnects (the same cases `Run` has for Docker).
+- **`Combine`** - forwards from both; one source failing fails the pass and
   removes nothing; a slot claimed by both goes to the first source with a
   warning; events from either trigger a pass.
-- **D-Bus wire format** - marshal and unmarshal round trips, and golden bytes
-  for a `ListUnitsByPatterns` call and reply.
-- **`DbusSystemdClient`** - against a fake bus served on a Unix socket in a
-  temporary directory: the auth handshake, `Hello`, `ListUnitsByPatterns`,
-  `GetAll`, `Subscribe`/`AddMatch`, a signal arriving as an event, and the
-  connection closing ending the stream with an error.
+- **`DBus`** - signals translated into `Change`s, unit paths escaped as
+  systemd does; and, against the real system bus where there is one, listing
+  the host's running units and subscribing until cancelled.
 - **Arguments** - `--source` repeated and comma separated,
   `PORTICAL_SOURCES`, an unknown source rejected, `--systemd-key`.
-- **Nix** - `nix flake check`: build, `bun test`, module evaluation, VM test.
+- **Nix** - `nix flake check`: build, `go test`, module evaluation, VM test.
 
 ## README
 
@@ -550,20 +552,24 @@ knowing" about one Portical per host.
 
 ## Decisions on the open questions
 
-1. **Hand-written D-Bus client** (`src/dbus.ts`, about 600 lines). It works
-   against the real system bus unprivileged and in the VM; `dbus-next` was not
-   tried.
-2. **Bun comes from nixos-unstable**, which has 1.4.2 - the version
-   `mise.toml` pins - so no fixed-output fetch of Bun was needed. The lock is
-   pinned to the same unstable revision as the development host's system.
-3. **`%i` is not expanded.** A term containing it is reported as unrecognised.
+1. **godbus for D-Bus**, behind the narrow `Bus` interface. Portical's first,
+   TypeScript, implementation had a hand-written client of about 600 lines to
+   stay free of dependencies; in Go one well-kept module is worth more than
+   that much wire format to maintain. Checked against the real system bus
+   unprivileged and in the VM.
+2. **Netlink rather than `ss`** for `published`: the same kernel interface,
+   asked directly, so the package needs nothing on `PATH` and nothing is
+   parsed from another program's output.
+3. **Go comes from nixos-unstable**, as `buildGo127Module`. The lock is pinned
+   to the same unstable revision as the development host's system.
+4. **`%i` is not expanded.** A term containing it is reported as unrecognised.
    Still small to add later.
-4. **`DesiredForward.container` keeps its name**, as the owner's name for logs
-   and the description. The daemon's wording no longer assumes containers:
-   "Watching for changes", and removals say "nothing asks for it any more".
-   "for <name>" reads fine with a unit name.
-5. **The CLI defaults to `docker`**, so existing installs are untouched; the
+5. **`DesiredForward.Owner`** is the owner's name for logs and the
+   description, a container's or a unit's. The daemon's wording does not
+   assume containers: "Watching for changes", and removals say "nothing asks
+   for it any more". "for <name>" reads fine with a unit name.
+6. **The CLI defaults to `docker`**, so existing installs are untouched; the
    module defaults to `[ "systemd" ]`. No detection.
-6. **`openFirewall` is in**, default off.
-7. **The description carries the full unit name** (`portical: (25565:25565/tcp)
+7. **`openFirewall` is in**, default off.
+8. **The description carries the full unit name** (`portical: (25565:25565/tcp)
    minecraft.service`), unambiguous against a container called `minecraft`.

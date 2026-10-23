@@ -1,37 +1,48 @@
 # Built on the *build* platform whatever the target, and cross-compiled to the
-# target architecture by Bun itself. Emulating an arm64 toolchain under QEMU to
-# produce an arm64 image takes minutes; this takes seconds.
-
-# The Bun that compiles the binary, and so the runtime that ends up inside it.
-# Kept in step with mise.toml - the one place the version is written down - by
-# `bun run.ts check`, which fails if they disagree; `bun run.ts sync` rewrites
-# this line from it. Carried here as well as there so that `docker build .` on a
-# clean checkout is still correct without mise installed.
+# target architecture by Go itself. Emulating an arm toolchain under QEMU to
+# produce an arm image takes minutes; this takes seconds.
 #
-# Pinned rather than floating on :1, which silently took the published image
-# from 1.3.14 to 1.4.0 on the first rebuild after that release - no commit, no
-# changelog, and a runtime nobody had tested against.
-ARG BUN_VERSION=1.4.2
-FROM --platform=$BUILDPLATFORM oven/bun:${BUN_VERSION}-alpine AS build
+# Pinned to the Go that mise.toml names, rather than floating on a tag that
+# would change the compiler under a rebuild with no commit to say so.
+FROM --platform=$BUILDPLATFORM golang:1.27.3-alpine AS build
 
-WORKDIR /app
+WORKDIR /src
 
-COPY package.json bun.lock ./
-RUN bun install --frozen-lockfile
+# godbus is the one module required, so it is fetched in a layer of its own,
+# which the source changing does not invalidate.
+COPY go.mod go.sum ./
+RUN go mod download
 
-COPY tsconfig.json ./
-COPY src ./src
+COPY main.go ./
+COPY internal ./internal
 
-# Computed by run.ts from the git history, which is not in the build context -
+# Computed by ./run from the git history, which is not in the build context -
 # so it is passed in rather than worked out here. A build with no --build-arg
 # still works and says "development", which is the truth about that build.
 ARG VERSION=development
 
+# TARGETVARIANT is "v7" for linux/arm/v7 and empty for the others; GOARM wants
+# the bare number, and ignores it on every architecture but arm.
 ARG TARGETARCH
-RUN target="bun-linux-$([ "$TARGETARCH" = "arm64" ] && echo arm64 || echo x64)-musl" && \
-    bun build --compile --minify --define "PORTICAL_VERSION=\"$VERSION\"" --target="$target" src/main.ts --outfile portical
+ARG TARGETVARIANT
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=$TARGETARCH GOARM=${TARGETVARIANT#v} \
+    go build -trimpath -ldflags "-s -w -X github.com/danielbodart/portical/internal/version.Version=$VERSION" \
+    -o /out/usr/local/bin/portical .
 
-FROM alpine:3
+# v1 was a shell script at this path, and its README told people to write
+# `command: "/opt/portical/run poll"`. Those compose files are still running.
+# The argument parser already ignores a leading path to the old script, and
+# this covers anyone who also overrode the entrypoint to point straight at it.
+# Made here because the image below has no shell to make it in.
+RUN mkdir -p /out/opt/portical && ln -s /usr/local/bin/portical /out/opt/portical/run
+
+# Nothing but the binary. A static Go binary needs no libc, and v1's Docker CLI
+# and miniupnpc are long gone - Portical speaks the Docker Engine API and UPnP
+# SOAP itself. The macvlan relay runs this same image as a helper, but only as
+# `portical relay <request>` through the entrypoint, so it needs no shell
+# either. And no tini: Portical handles SIGTERM itself, and starts no children
+# to reap.
+FROM scratch
 
 # An ARG does not survive into the next stage, so it is declared again. These
 # labels are how `docker inspect` answers what a pulled image actually is,
@@ -43,21 +54,17 @@ LABEL org.opencontainers.image.version="$VERSION" \
       org.opencontainers.image.source="https://github.com/danielbodart/portical" \
       org.opencontainers.image.licenses="Apache-2.0"
 
-# Bun's compiled output links against the C++ runtime. Nothing else is needed:
-# v1's image carried the Docker CLI and miniupnpc, and both are now gone -
-# Portical speaks the Docker Engine API and UPnP SOAP itself.
-RUN apk add --no-cache libstdc++ ca-certificates
-
-COPY --from=build /app/portical /usr/local/bin/portical
-
-# v1 was a shell script at this path, and its README told people to write
-# `command: "/opt/portical/run poll"`. Those compose files are still running.
-# The argument parser already ignores a leading path to the old script, and
-# this covers anyone who also overrode the entrypoint to point straight at it.
-RUN mkdir -p /opt/portical && ln -s /usr/local/bin/portical /opt/portical/run
+# For a gateway whose --root is https. UPnP is plain HTTP, and so is every
+# router seen so far, but the option accepts https, and a bundle of a few
+# hundred kilobytes is cheaper than an x509 error nobody can fix from outside
+# the image.
+COPY --from=build /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
+COPY --from=build /out/ /
 
 # Portical only reads the Docker socket, so it does not need to be root - but
 # it does need to be in the group that owns the socket. That group id varies by
-# host, so this stays root by default and the compose file shows the override.
+# host, so this stays root by default. To drop it, give compose a
+# `user: "65534:<the socket's gid>"` - by number, since an empty image has no
+# /etc/passwd or /etc/group to name either in.
 ENTRYPOINT ["/usr/local/bin/portical"]
 CMD ["run"]

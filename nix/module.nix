@@ -29,7 +29,7 @@ let
   cfg = config.services.portical;
 
   # The label's grammar, one term per element, with every port in 1-65535 as
-  # src/rules.ts has it. Checked here so that a typo fails the evaluation,
+  # internal/rules has it. Checked here so that a typo fails the evaluation,
   # against the service that has it, rather than turning up as a warning in
   # the journal.
   term =
@@ -287,11 +287,13 @@ in
 
         # Nothing here needs privilege. The system bus lets any user list
         # units, read their properties and subscribe; unit files live in
-        # /etc, /run and /nix/store, all readable; and ss only reads.
+        # /etc, /run and /nix/store, all readable; and listing sockets over
+        # NETLINK_SOCK_DIAG only reads, which any user may.
         CapabilityBoundingSet = "";
         AmbientCapabilities = "";
         NoNewPrivileges = true;
-        # The gateway and SSDP; the system bus and Docker; sock_diag for ss.
+        # The gateway and SSDP; the system bus and Docker; sock_diag for
+        # `published`.
         RestrictAddressFamilies = [
           "AF_INET"
           "AF_INET6"
@@ -305,7 +307,8 @@ in
         ProtectKernelTunables = true;
         ProtectKernelModules = true;
         ProtectKernelLogs = true;
-        # Read-only: ss reads cgroupfs to name a socket's cgroup.
+        # Read-only: `published` walks /sys/fs/cgroup to name a socket's
+        # cgroup, and reading is all it does there.
         ProtectControlGroups = true;
         ProtectClock = true;
         ProtectHostname = true;
@@ -320,7 +323,8 @@ in
           "~@privileged"
         ];
         UMask = "0077";
-        # Not MemoryDenyWriteExecute: Bun's JIT needs writable code.
+        # A Go binary has no JIT, so no memory is ever both written and run.
+        MemoryDenyWriteExecute = true;
         # Not PrivateNetwork: the whole point is the LAN.
       };
     };

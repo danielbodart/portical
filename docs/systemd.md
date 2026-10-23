@@ -100,9 +100,10 @@ Templates' `%i` is not expanded.
 ### `published` for a unit
 
 `published` means the ports the unit is listening on, found by matching each
-listening socket's cgroup (from `ss -e`) to the unit's - including sockets of a
-`.socket` unit that activates it. Only binds on all addresses or on the host's LAN
-address count. It is a convenience, and explicit ports are the recommended form:
+listening socket's cgroup, which Portical asks the kernel for directly, to the
+unit's - including sockets of a `.socket` unit that activates it. Only binds on all
+addresses or on the host's LAN address count. It is a convenience, and explicit
+ports are the recommended form:
 
 - **UDP is a guess.** Every bound UDP socket looks like a listener, including ones a
   service opened to talk out. Those use ephemeral ports, so UDP ports in
@@ -111,7 +112,8 @@ address count. It is a convenience, and explicit ports are the recommended form:
 - **A port opened after the unit started** is picked up by the next interval pass
   rather than straight away, since systemd announces nothing when a running service
   starts listening.
-- It needs Linux 5.7 and iproute2 5.9 or later, for the socket's cgroup.
+- It needs Linux 5.7 or later, whose socket diagnostics carry the socket's cgroup.
+  Nothing has to be installed for it.
 
 ## Installing from a release
 
@@ -122,18 +124,19 @@ standalone binary for each architecture and a unit file to run it:
 | Asset | |
 | --- | --- |
 | `portical-linux-x64` | The binary, for 64-bit Intel and AMD. |
-| `portical-linux-arm64` | The binary, for 64-bit ARM - a Pi 4/5 on 64-bit Raspberry Pi OS, or an ARM NAS. |
+| `portical-linux-arm64` | The binary, for 64-bit ARM - a Pi 3/4/5 on 64-bit Raspberry Pi OS, or an ARM NAS. |
+| `portical-linux-armv7` | The binary, for 32-bit ARMv7 - a Pi 2 onwards on 32-bit Raspberry Pi OS, or an armhf NAS. |
 | `portical.service` | The unit file. |
 | `SHA256SUMS` | Checksums of the above. |
 
-The binaries are built against glibc, which is every mainstream systemd
-distribution. They have no other dependencies: Portical is a single file.
+The binaries are static, so they run on any distribution, glibc or musl, and
+have no dependencies at all: Portical is a single file.
 
 ### Install
 
 ```shell
 cd "$(mktemp -d)"
-arch=$(uname -m | sed 's/x86_64/x64/; s/aarch64/arm64/')
+arch=$(uname -m | sed 's/x86_64/x64/; s/aarch64/arm64/; s/armv7l/armv7/')
 base=https://github.com/danielbodart/portical/releases/latest/download
 curl -fsSLO "$base/portical-linux-$arch" -O "$base/portical.service" -O "$base/SHA256SUMS"
 sha256sum -c --ignore-missing SHA256SUMS
@@ -173,9 +176,9 @@ journalctl -u portical -f
 The unit reads systemd units only (`PORTICAL_SOURCES=systemd`). It runs as a
 dynamic user with no capabilities, with the same sandboxing as the NixOS module:
 nothing it does needs privilege. The system bus lets any user list units and
-subscribe to their changes, unit files are readable by anyone, and `ss` only reads.
-It needs a systemd with `DynamicUser`, which is any current distribution, and
-iproute2's `ss` only if a unit uses `published`.
+subscribe to their changes, unit files are readable by anyone, and the kernel
+answers any user's question about listening sockets. It needs a systemd with
+`DynamicUser`, which is any current distribution.
 
 `PORTICAL_UPNP_ROOT_URL`, `PORTICAL_POLL_INTERVAL`, `PORTICAL_SOURCES` and
 `PORTICAL_SYSTEMD_KEY` can all be set with `Environment=` this way. Any other
@@ -228,7 +231,7 @@ Portical cannot detect - it uses `danielbodart/portical:latest`, and
 Replace the binary and restart:
 
 ```shell
-arch=$(uname -m | sed 's/x86_64/x64/; s/aarch64/arm64/')
+arch=$(uname -m | sed 's/x86_64/x64/; s/aarch64/arm64/; s/armv7l/armv7/')
 curl -fsSL -o portical "https://github.com/danielbodart/portical/releases/latest/download/portical-linux-$arch"
 sudo install -m 755 portical /usr/local/bin/portical
 sudo systemctl restart portical

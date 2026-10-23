@@ -25,17 +25,46 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      # mise.toml is the one place Bun's version is pinned, for CI and for
+      # mise.toml is the one place Go's version is pinned, for CI and for
       # anyone working on this locally.
       - uses: jdx/mise-action@v4
 
-      - run: bun install --frozen-lockfile
-
-      - name: Typecheck
-        run: bun run.ts check
+      - name: Format and vet
+        run: ./run check
 
       - name: Test
-        run: bun run.ts test
+        run: ./run test
+
+  # The flake: the package (its build runs the tests), the module evaluation
+  # and the NixOS VM test, which boots a router, a host and a client and sends
+  # traffic through a forward. Deliberately not in the publishing jobs' `needs`:
+  # a VM test is slow and can be flaky on shared runners, and a flaky VM must
+  # not block a release. A red run here is still a red build to fix.
+  nix:
+    runs-on: ubuntu-latest
+    steps:
+      # The whole history, so the flake's version has its commit count.
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      # Hosted runners have /dev/kvm, but not readable by the runner's user;
+      # without it the VM test falls back to emulation, many times slower.
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
+            | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      - uses: cachix/install-nix-action@v31
+
+      - name: VM test
+        run: nix build -L .#checks.x86_64-linux.vm
+
+      # Everything else in the flake, the VM test already built above.
+      - name: Flake check
+        run: nix flake check -L
 
   build:
     runs-on: ubuntu-latest
@@ -50,20 +79,20 @@ jobs:
     steps:
       # The whole history, because the version's minor is the commit count and
       # the default shallow checkout would make every build claim to be the
-      # first. run.ts refuses to compute a version from a shallow clone rather
+      # first. ./run refuses to compute a version from a shallow clone rather
       # than publish a wrong one.
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
-      # Only here to run run.ts, which is the single place the version is
+      # Only here to run ./run, which is the single place the version is
       # defined - deriving it again in shell would be a second definition to
       # keep in step with the first.
       - uses: jdx/mise-action@v4
 
       - name: Version
         id: version
-        run: echo "value=$(bun run.ts version)" >> "$GITHUB_OUTPUT"
+        run: echo "value=$(./run version)" >> "$GITHUB_OUTPUT"
 
       - name: Set up Buildx
         uses: docker/setup-buildx-action@v4
@@ -94,11 +123,12 @@ jobs:
         uses: docker/build-push-action@v7
         with:
           context: .
-          # arm64 matters more than usual here: Portical runs on the home
-          # network it is forwarding ports for, which is very often a Pi or an
-          # ARM NAS. The CircleCI pipeline only ever built amd64. No QEMU is
-          # involved - Bun cross-compiles, so this costs almost nothing.
-          platforms: linux/amd64,linux/arm64
+          # ARM matters more than usual here: Portical runs on the home network
+          # it is forwarding ports for, which is very often a Pi or an ARM NAS,
+          # and not always a 64-bit one. The CircleCI pipeline only ever built
+          # amd64. No QEMU is involved - Go cross-compiles from the build
+          # platform, so each architecture costs seconds.
+          platforms: linux/amd64,linux/arm64,linux/arm/v7
           push: ${{ github.event_name != 'pull_request' && github.ref == 'refs/heads/master' }}
           # Both tags point at the same image. :latest is what the README and
           # every existing compose file pull; the exact version is what makes
@@ -133,12 +163,12 @@ jobs:
 
       - uses: jdx/mise-action@v4
 
-      - run: bun install --frozen-lockfile
-
+      # Every architecture's binary, the unit and their checksums, into
+      # dist/release.
       - name: Build
-        run: bun run.ts release
+        run: ./run release
 
-      # Same commit, same run, so run.ts derives the same version the image was
+      # Same commit, same run, so ./run derives the same version the image was
       # published as. Checked rather than assumed, since a release whose binary
       # disagrees with its tag is worse than no release.
       - name: Check the version
