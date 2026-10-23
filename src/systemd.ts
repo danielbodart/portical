@@ -43,7 +43,7 @@ export interface SystemdEvent {
  * reason DockerClient is: so a fake can stand in for the whole of systemd.
  */
 export interface SystemdClient {
-  /** Every unit that is active or reloading. */
+  /** Every unit that is active, reloading or refreshing - running, in other words. */
   units(): Promise<Unit[]>;
   /** The unit's cgroup, such as `/system.slice/sshd.service`, if it has one. */
   controlGroup(unit: string): Promise<string | undefined>;
@@ -404,11 +404,31 @@ export function machine(): Host {
 
   return {
     async read(path) {
-      const info = await stat(path);
+      let info;
+      try {
+        info = await stat(path);
+      } catch (error) {
+        // systemd still names a file deleted since it was loaded, until the
+        // next daemon-reload. What is on disk now is nothing, so it declares
+        // nothing - failing instead would fail every pass, for every source,
+        // until someone reloads. Any other error still fails the pass.
+        if (missing(error)) {
+          cache.delete(path);
+          return "";
+        }
+        throw error;
+      }
       const stamp = `${info.ino}/${info.size}/${info.mtimeMs}`;
       const cached = cache.get(path);
       if (cached?.stamp === stamp) return cached.text;
-      const text = await readFile(path, "utf8");
+      let text: string;
+      try {
+        text = await readFile(path, "utf8");
+      } catch (error) {
+        // Deleted between the stat and the read.
+        if (missing(error)) return "";
+        throw error;
+      }
       cache.set(path, { stamp, text });
       return text;
     },
@@ -439,6 +459,11 @@ export function machine(): Host {
   };
 }
 
+function missing(error: unknown): boolean {
+  const code = (error as NodeJS.ErrnoException).code;
+  return code === "ENOENT" || code === "ENOTDIR";
+}
+
 const SYSTEMD = "org.freedesktop.systemd1";
 const MANAGER_PATH = "/org/freedesktop/systemd1";
 const MANAGER = "org.freedesktop.systemd1.Manager";
@@ -455,6 +480,34 @@ const CGROUP_INTERFACES: Readonly<Record<string, string>> = {
   slice: "Slice",
   scope: "Scope",
 };
+
+/**
+ * How many calls one connection has waiting on a reply at once: well under
+ * dbus-daemon's default max_replies_per_connection of 128, leaving room for
+ * anything else sharing the connection. dbus-broker has no such limit.
+ */
+export const IN_FLIGHT = 32;
+
+/**
+ * Every item through `map`, in order, with at most `limit` running at once.
+ * Fails as soon as one does, like Promise.all.
+ */
+export async function limited<T, R>(
+  items: readonly T[],
+  limit: number,
+  map: (item: T) => Promise<R>,
+): Promise<R[]> {
+  const results = new Array<R>(items.length);
+  let next = 0;
+  const worker = async () => {
+    while (next < items.length) {
+      const index = next++;
+      results[index] = await map(items[index]!);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
+  return results;
+}
 
 /**
  * systemd over the system bus.
@@ -488,14 +541,17 @@ export class DbusSystemdClient implements SystemdClient {
   async units(): Promise<Unit[]> {
     const bus = await this.bus();
     const [listed] = (await bus.call(SYSTEMD, MANAGER_PATH, MANAGER, "ListUnitsByPatterns", "asas", [
-      ["active", "reloading"],
+      ["active", "reloading", "refreshing"],
       [],
     ])) as [[string, string, string, string, string, string, string][]];
 
-    // All at once: the connection matches replies by serial, so a few hundred
-    // overlapping calls cost about as much as one.
-    return Promise.all(
-      listed.map(async ([name, , , , , , path]) => {
+    // Overlapping, as the connection matches replies by serial, but only so
+    // many at a time: dbus-daemon refuses a connection more than 128 pending
+    // replies by default, and a host easily has more active units than that.
+    return limited(
+      listed,
+      IN_FLIGHT,
+      async ([name, , , , , , path]) => {
         const [properties] = (await bus.call(SYSTEMD, path, PROPERTIES, "GetAll", "s", [UNIT])) as [
           Record<string, unknown>,
         ];
@@ -506,7 +562,7 @@ export class DbusSystemdClient implements SystemdClient {
           triggeredBy: (properties.TriggeredBy as string[] | undefined) ?? [],
           needDaemonReload: properties.NeedDaemonReload === true,
         };
-      }),
+      },
     );
   }
 

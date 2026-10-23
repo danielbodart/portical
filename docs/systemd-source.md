@@ -150,8 +150,10 @@ for stops.
 
 Discovery is over the system bus, `org.freedesktop.systemd1`:
 
-1. `Manager.ListUnitsByPatterns(states = ["active", "reloading"], patterns =
-   [])` - one call for every candidate, with each unit's object path.
+1. `Manager.ListUnitsByPatterns(states = ["active", "reloading",
+   "refreshing"], patterns = [])` - one call for every candidate, with each
+   unit's object path. `refreshing` is a running unit having its mount
+   namespace refreshed, so it is as wanted as an active one.
 2. For each, `Properties.GetAll("org.freedesktop.systemd1.Unit")`, for
    `FragmentPath`, `DropInPaths`, `TriggeredBy` and `NeedDaemonReload`.
 3. Only for a unit whose declaration includes `published`, its
@@ -160,14 +162,18 @@ Discovery is over the system bus, `org.freedesktop.systemd1`:
    `ControlGroup` of each unit in `TriggeredBy`.
 
 A host has a few hundred active units, so a pass is a few hundred local D-Bus
-round trips and a few hundred small file reads. That is well inside the
+round trips and a few hundred small file reads. The round trips overlap, but
+at most 32 at a time: dbus-daemon (not dbus-broker) refuses a connection more
+than 128 pending replies by default. That is well inside the
 15 second interval, and the parse is cached by path, inode, size and mtime so
 an unchanged file is read once per run. If that ever proves too slow, the
 GetAll results can be cached until the next `Reloading` signal.
 
 Any failure in any of those - the bus, a property, a file listed in
 `FragmentPath` or `DropInPaths` that cannot be read - fails the pass, for the
-completeness reason above.
+completeness reason above. The one exception is a file that no longer exists:
+systemd keeps naming a deleted unit file or drop-in until the next
+daemon-reload, and what is on disk now is nothing, so it is read as empty.
 
 User units (`systemd --user`) are out of scope.
 

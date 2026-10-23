@@ -1,11 +1,16 @@
 import { afterEach, describe, expect, test } from "bun:test";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { DEFAULTS, Portical } from "../src/daemon.ts";
 import { DbusError, MessageType, Variant } from "../src/dbus.ts";
 import {
   assignments,
   DbusSystemdClient,
   declaration,
+  IN_FLIGHT,
   listening,
+  machine,
   parseListeners,
   SystemdSource,
   toEvent,
@@ -508,6 +513,47 @@ describe("Portical with the systemd source", () => {
   });
 });
 
+describe("machine", () => {
+  let directory: string;
+  afterEach(() => rmSync(directory, { recursive: true, force: true }));
+
+  test("reads a unit file, and sees it change", async () => {
+    directory = mkdtempSync(join(tmpdir(), "portical-units-"));
+    const path = join(directory, "mc.service");
+    writeFileSync(path, "[Unit]\nX-Portical-Forward=25565\n");
+    const host = machine();
+    expect(await host.read(path)).toBe("[Unit]\nX-Portical-Forward=25565\n");
+    writeFileSync(path, "[Unit]\nX-Portical-Forward=25566/tcp\n");
+    expect(await host.read(path)).toBe("[Unit]\nX-Portical-Forward=25566/tcp\n");
+  });
+
+  test("reads a file deleted since systemd loaded it as empty, rather than failing every pass", async () => {
+    directory = mkdtempSync(join(tmpdir(), "portical-units-"));
+    const path = join(directory, "mc.service");
+    writeFileSync(path, "[Unit]\nX-Portical-Forward=25565\n");
+    const host = machine();
+    await host.read(path);
+    rmSync(path);
+    expect(await host.read(path)).toBe("");
+    expect(await host.read(join(directory, "gone.service.d", "forward.conf"))).toBe("");
+    expect(await host.read(join(path, "under-a-file.conf"))).toBe("");
+  });
+
+  test("still fails on a file it may not read", async () => {
+    directory = mkdtempSync(join(tmpdir(), "portical-units-"));
+    // A directory where a file should be: readable by stat, not by read.
+    await expect(machine().read(directory)).rejects.toThrow();
+  });
+
+  test("lets the source forward nothing for a unit whose file is gone", async () => {
+    directory = mkdtempSync(join(tmpdir(), "portical-units-"));
+    const systemd = new FakeSystemd();
+    systemd.running = [unit("gone.service", join(directory, "gone.service"), { needDaemonReload: true })];
+    const desired = await new SystemdSource(systemd, {}, machine()).desired();
+    expect(desired.forwards).toEqual([]);
+  });
+});
+
 describe("DbusSystemdClient", () => {
   let bus: FakeBus;
   afterEach(async () => bus?.stop());
@@ -556,11 +602,35 @@ describe("DbusSystemdClient", () => {
         needDaemonReload: false,
       },
     ]);
-    expect(bus.calls.find((c) => c.member === "ListUnitsByPatterns")?.body).toEqual([["active", "reloading"], []]);
+    expect(bus.calls.find((c) => c.member === "ListUnitsByPatterns")?.body).toEqual([["active", "reloading", "refreshing"], []]);
     expect(bus.calls.find((c) => c.member === "GetAll")).toMatchObject({
       path: SSHD,
       body: ["org.freedesktop.systemd1.Unit"],
     });
+  });
+
+  test("keeps the calls it has waiting under dbus-daemon's limit, however many units there are", async () => {
+    bus = await FakeBus.start();
+    bus.maxPending = 128;
+    const units = Array.from({ length: 300 }, (_, index) => `unit${index}.service`);
+    bus.answer = async (call) => {
+      if (call.member === "ListUnitsByPatterns") {
+        return {
+          signature: "a(ssssssouso)",
+          body: [units.map((name) => [name, "", "loaded", "active", "running", "", unitPath(name), 0, "", "/"])],
+        };
+      }
+      if (call.member === "GetAll") {
+        await Bun.sleep(1);
+        return { signature: "a{sv}", body: [{ FragmentPath: new Variant("s", `/etc/systemd/system/${call.path}`) }] };
+      }
+      return {};
+    };
+    const client = new DbusSystemdClient(bus.path);
+
+    const listed = await client.units();
+    expect(listed.map((unit) => unit.name)).toEqual(units);
+    expect(bus.mostPending).toBeLessThanOrEqual(IN_FLIGHT);
   });
 
   test("reads a unit's cgroup from its type's interface", async () => {

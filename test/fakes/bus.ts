@@ -20,6 +20,14 @@ export class FakeBus {
   /** The line received after the NUL byte, such as `AUTH EXTERNAL 31303030`. */
   auth?: string;
   answer: (call: Message) => Reply | Promise<Reply> = () => ({});
+  /**
+   * Set to answer calls concurrently and refuse any that would leave more
+   * than this many waiting, as dbus-daemon's max_replies_per_connection does.
+   */
+  maxPending?: number;
+  /** The most calls that were waiting on an answer at once. */
+  mostPending = 0;
+  private pending = 0;
   private readonly server: Server;
   private readonly directory: string;
   private readonly clients = new Set<Socket>();
@@ -92,15 +100,29 @@ export class FakeBus {
       let decoded: ReturnType<typeof decode>;
       while ((decoded = decode(buffer))) {
         buffer = buffer.slice(decoded.length);
-        await this.respond(socket, decoded.message);
+        if (this.maxPending === undefined) await this.respond(socket, decoded.message);
+        else void this.respond(socket, decoded.message);
       }
     });
   }
 
   private async respond(socket: Socket, call: Message): Promise<void> {
     this.calls.push(call);
-    const reply =
-      call.member === "Hello" ? { signature: "s", body: [":1.42"] } : await this.answer(call);
+    let reply: Reply;
+    if (this.maxPending !== undefined && this.pending >= this.maxPending) {
+      reply = new DbusError(
+        "org.freedesktop.DBus.Error.LimitsExceeded",
+        "The maximum number of pending replies per connection has been reached",
+      );
+    } else {
+      this.pending++;
+      this.mostPending = Math.max(this.mostPending, this.pending);
+      try {
+        reply = call.member === "Hello" ? { signature: "s", body: [":1.42"] } : await this.answer(call);
+      } finally {
+        this.pending--;
+      }
+    }
     const common = { serial: ++this.serial, replySerial: call.serial, destination: ":1.42" };
     socket.write(
       encode(
