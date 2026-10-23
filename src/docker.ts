@@ -1,5 +1,7 @@
 import { ok, type Handler } from "./http.ts";
 import type { Protocol } from "./model.ts";
+import { resolve, type ResolveOptions } from "./resolve.ts";
+import type { Desired, Source, SourceEvent } from "./source.ts";
 
 /** A network a container is attached to, joined with that network's driver. */
 export interface ContainerNetwork {
@@ -50,6 +52,31 @@ export interface DockerClient {
   runInNetworkOf(container: string, image: string, command: string[]): Promise<string>;
   /** The image a container was created from. */
   imageOf(container: string): Promise<string | undefined>;
+}
+
+/**
+ * Containers as a Source: the forwards their labels ask for.
+ *
+ * The client stays the narrower thing. It is also what the relay uses to run
+ * a container in another's network, which has nothing to do with deciding
+ * what to forward, so the Source wraps it rather than the client growing into
+ * one.
+ */
+export class DockerSource implements Source {
+  constructor(
+    private readonly docker: DockerClient,
+    private readonly options: ResolveOptions & { readonly label: string },
+  ) {}
+
+  async desired(): Promise<Desired> {
+    return resolve(await this.docker.containers(this.options.label), this.options);
+  }
+
+  async *events(signal: AbortSignal): AsyncIterable<SourceEvent> {
+    for await (const event of this.docker.events(this.options.label, signal)) {
+      yield { description: `Container ${event.container} ${event.action}` };
+    }
+  }
 }
 
 /** Engine API version. 1.41 ships with Docker 20.10, old enough to be safe. */

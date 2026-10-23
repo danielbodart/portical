@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, test } from "bun:test";
 import { getEventListeners } from "node:events";
 import { DEFAULTS, Portical, type Options } from "../src/daemon.ts";
+import { DockerSource } from "../src/docker.ts";
 import { FORWARD_LABEL, NETWORK_LABEL } from "../src/resolve.ts";
 import { UpnpGateway } from "../src/upnp.ts";
 import { container, FakeDocker, network } from "./fakes/docker.ts";
@@ -20,10 +21,11 @@ async function portical(quirks: Quirks = {}, overrides: Partial<Options> = {}) {
   const router = new FakeGateway(quirks);
   const gateway = await UpnpGateway.at(router.handler, router.rootUrl);
   const log: string[] = [];
+  const options = { ...DEFAULTS, hostAddress: HOST, ...overrides };
   const daemon = new Portical(
-    docker,
+    new DockerSource(docker, options),
     gateway,
-    { ...DEFAULTS, hostAddress: HOST, ...overrides },
+    options,
     (message) => log.push(message),
   );
   return { docker, router, daemon, log };

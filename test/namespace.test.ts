@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { DEFAULTS, Portical } from "../src/daemon.ts";
+import { DockerSource } from "../src/docker.ts";
 import { DEFAULT_HELPER_IMAGE, viaContainer } from "../src/namespace.ts";
 import { decodeRelay, encodeRelay, parseRelayOutput, toRelayedRequest } from "../src/relay.ts";
 import { FORWARD_LABEL } from "../src/resolve.ts";
@@ -109,10 +110,11 @@ describe("a macvlan container behind a gateway in secure mode", () => {
     const asContainer = (name: string) =>
       new UpnpGateway(viaContainer(docker, name), direct.controlUrl, direct.serviceType);
 
+    const options = { ...DEFAULTS, hostAddress: HOST };
     const daemon = new Portical(
-      docker,
+      new DockerSource(docker, options),
       direct,
-      { ...DEFAULTS, hostAddress: HOST },
+      options,
       (message) => log.push(message),
       asContainer,
     );

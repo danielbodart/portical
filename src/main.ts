@@ -2,7 +2,7 @@ import { DEFAULTS, Portical, type Options } from "./daemon.ts";
 import { DEFAULT_HELPER_IMAGE, ownImage, viaContainer } from "./namespace.ts";
 import { runRelay } from "./relay.ts";
 import { addressFacing, discover } from "./discovery.ts";
-import { HttpDockerClient } from "./docker.ts";
+import { DockerSource, HttpDockerClient } from "./docker.ts";
 import { http, overUnixSocket, withTimeout, type Handler } from "./http.ts";
 import { UpnpGateway } from "./upnp.ts";
 import { version } from "./version.ts";
@@ -304,7 +304,7 @@ export async function main(argv: readonly string[]): Promise<number> {
       gateway.serviceType,
     );
 
-  const portical = new Portical(docker, gateway, options, note, asContainer);
+  const portical = new Portical(new DockerSource(docker, options), gateway, options, note, asContainer);
 
   if (options.dryRun) note("Dry run - nothing will be changed");
 

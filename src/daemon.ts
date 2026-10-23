@@ -1,7 +1,6 @@
-import type { DockerClient } from "./docker.ts";
 import { describe } from "./model.ts";
 import { reconcile, type Action, type DesiredForward } from "./reconcile.ts";
-import { resolve } from "./resolve.ts";
+import type { Source } from "./source.ts";
 import { UpnpError, type Gateway } from "./upnp.ts";
 
 export interface Options {
@@ -61,7 +60,7 @@ export type Log = (message: string) => void;
  */
 export class Portical {
   constructor(
-    private readonly docker: DockerClient,
+    private readonly source: Source,
     private readonly gateway: Gateway,
     private readonly options: Options,
     private readonly log: Log = console.log,
@@ -86,16 +85,15 @@ export class Portical {
   private lastSummary?: string;
 
   /**
-   * Bring the gateway into line with the containers, once.
+   * Bring the gateway into line with the source, once.
    *
-   * Container listing failures propagate rather than being logged and skipped.
-   * Removals are derived from absence, so reconciling against a container list
-   * we failed to fetch would read as "everything stopped" and tear down every
-   * live mapping.
+   * Source failures propagate rather than being logged and skipped. Removals
+   * are derived from absence, so reconciling against a list we failed to
+   * fetch would read as "everything stopped" and tear down every live
+   * mapping.
    */
   async once(): Promise<Action[]> {
-    const containers = await this.docker.containers(this.options.label);
-    const { forwards, warnings } = resolve(containers, this.options);
+    const { forwards, warnings } = await this.source.desired();
     for (const warning of warnings) this.log(`Warning: ${warning}`);
 
     const actions = reconcile(forwards, await this.gateway.mappings(), {
@@ -300,9 +298,9 @@ export class Portical {
       // not worth a line.
       while (!signal.aborted) {
         try {
-          for await (const event of this.docker.events(this.options.label, signal)) {
+          for await (const event of this.source.events(signal)) {
             if (signal.aborted) break;
-            this.log(`Container ${event.container} ${event.action}`);
+            if (event.description) this.log(event.description);
             await pass();
           }
         } catch {

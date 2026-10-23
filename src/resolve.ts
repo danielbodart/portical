@@ -2,6 +2,7 @@ import type { Container, ContainerNetwork } from "./docker.ts";
 import type { Rule } from "./model.ts";
 import type { DesiredForward, Target } from "./reconcile.ts";
 import { parseLabel } from "./rules.ts";
+import type { Desired } from "./source.ts";
 
 export const FORWARD_LABEL = "portical.upnp.forward";
 
@@ -27,10 +28,7 @@ export interface ResolveOptions {
   readonly hostAddress?: string;
 }
 
-export interface Resolution {
-  readonly forwards: readonly DesiredForward[];
-  readonly warnings: readonly string[];
-}
+export type Resolution = Desired;
 
 /**
  * Which network driver to prefer when a container is on more than one.
