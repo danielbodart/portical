@@ -2,24 +2,30 @@ import { DEFAULTS, Portical, type Options } from "./daemon.ts";
 import { DEFAULT_HELPER_IMAGE, ownImage, viaContainer } from "./namespace.ts";
 import { runRelay } from "./relay.ts";
 import { addressFacing, discover } from "./discovery.ts";
+import { systemBusPath } from "./dbus.ts";
 import { DockerSource, HttpDockerClient } from "./docker.ts";
 import { http, overUnixSocket, withTimeout, type Handler } from "./http.ts";
-import { UpnpGateway } from "./upnp.ts";
+import { combine, type Source } from "./source.ts";
+import { DbusSystemdClient, FORWARD_KEY, SystemdSource } from "./systemd.ts";
+import { UpnpGateway, type Gateway } from "./upnp.ts";
 import { version } from "./version.ts";
 import { release } from "node:os";
 
-const USAGE = `portical - UPnP port forwarding for Docker containers, driven by a label
+const USAGE = `portical - UPnP port forwarding for Docker containers and systemd units
 
 Usage: portical [options] [command]
 
 Commands:
-  run       Reconcile continuously, reacting to container changes (default)
+  run       Reconcile continuously, reacting to changes (default)
   update    Reconcile once and exit
   list      Show the gateway's current port mappings and exit
 
 Options:
   -r, --root URL          UPnP root description URL (skips discovery, much faster)
   -d, --duration SECONDS  Seconds between reconcile passes (default ${DEFAULTS.interval})
+  -s, --source NAME       Where forwards are declared: docker, systemd, or both
+                          as docker,systemd. Repeatable (default docker)
+      --systemd-key KEY   Unit file key to read (default ${FORWARD_KEY})
   -l, --label LABEL       Container label to read (default ${DEFAULTS.label})
       --network-label L   Label naming which network to forward to (default ${DEFAULTS.networkLabel})
       --lease SECONDS     Lease to request; 0 never expires (default ${DEFAULTS.leaseDuration})
@@ -40,6 +46,9 @@ Options:
 Environment:
   PORTICAL_UPNP_ROOT_URL  Same as --root
   PORTICAL_POLL_INTERVAL  Same as --duration
+  PORTICAL_SOURCES        Same as --source
+  PORTICAL_SYSTEMD_KEY    Same as --systemd-key
+  DBUS_SYSTEM_BUS_ADDRESS The system bus, for the systemd source
 
 The commands 'poll' and 'listen' are accepted as aliases for 'run'. In v1 they
 were different things - 'listen' reacted to container starts but never renewed
@@ -47,8 +56,14 @@ a lease or noticed a container stopping, and 'poll' did the reverse. 'run' does
 both, so there is nothing left to choose between.
 `;
 
+export const SOURCES = ["docker", "systemd"] as const;
+export type SourceName = (typeof SOURCES)[number];
+
 interface Parsed {
   readonly command: string;
+  /** In the order named, which is also who wins a port both ask for. */
+  readonly sources: readonly SourceName[];
+  readonly systemdKey: string;
   readonly args: string[];
   readonly options: Options;
   readonly root?: string;
@@ -67,6 +82,9 @@ export function parseArguments(argv: readonly string[], env: Record<string, stri
   let explicitHelperImage = env.PORTICAL_HELPER_IMAGE;
   let help = false;
   let showVersion = false;
+  let sources: SourceName[] | undefined = env.PORTICAL_SOURCES ? sourceNames(env.PORTICAL_SOURCES) : undefined;
+  let named = false;
+  let systemdKey = env.PORTICAL_SYSTEMD_KEY ?? FORWARD_KEY;
   const options: Record<string, unknown> = {
     ...DEFAULTS,
     interval: env.PORTICAL_POLL_INTERVAL ? number(env.PORTICAL_POLL_INTERVAL, "PORTICAL_POLL_INTERVAL") : DEFAULTS.interval,
@@ -84,6 +102,15 @@ export function parseArguments(argv: readonly string[], env: Record<string, stri
     switch (argument) {
       case "-r": case "--root": root = value(); break;
       case "-d": case "--duration": options.interval = number(value(), argument); break;
+      case "-s": case "--source": {
+        // The first flag replaces the environment's list rather than adding
+        // to it, so a command line always says the whole of what it means.
+        const more = sourceNames(value());
+        sources = named ? [...(sources ?? []), ...more] : more;
+        named = true;
+        break;
+      }
+      case "--systemd-key": systemdKey = value(); break;
       case "-l": case "--label": options.label = value(); break;
       case "--network-label": options.networkLabel = value(); break;
       case "--lease": options.leaseDuration = number(value(), argument); break;
@@ -119,6 +146,8 @@ export function parseArguments(argv: readonly string[], env: Record<string, stri
 
   return {
     command,
+    sources: [...new Set<SourceName>(sources ?? ["docker"])],
+    systemdKey,
     args,
     options: options as unknown as Options,
     root,
@@ -127,6 +156,15 @@ export function parseArguments(argv: readonly string[], env: Record<string, stri
     help,
     showVersion,
   };
+}
+
+function sourceNames(value: string): SourceName[] {
+  return value.split(",").map((name) => name.trim()).filter((name) => name !== "").map((name) => {
+    if (!(SOURCES as readonly string[]).includes(name)) {
+      throw new Error(`unknown source '${name}', expected one of ${SOURCES.join(", ")}`);
+    }
+    return name as SourceName;
+  });
 }
 
 /** A path to v1's shell script, or to the v2 binary, used as argv[0]. */
@@ -281,30 +319,43 @@ export async function main(argv: readonly string[]): Promise<number> {
   }
 
   // Which of this host's addresses the gateway can see. Bridge and host
-  // networked containers are forwarded to the host, so their mappings have to
-  // name it, and v1 never had to work it out because upnpc inferred it.
+  // networked containers, and every systemd unit, are forwarded to the host,
+  // so their mappings have to name it, and v1 never had to work it out
+  // because upnpc inferred it.
   const hostAddress = await addressFacing(new URL(gateway.controlUrl).hostname);
   if (hostAddress) note(`This host is ${hostAddress} on the LAN`);
 
-  note(`Talking to Docker at ${parsed.socket}`);
-  const docker = new HttpDockerClient(overUnixSocket(parsed.socket));
   const options = { ...parsed.options, hostAddress };
+  const sources: Source[] = [];
+  let asContainer: ((container: string) => Gateway) | undefined;
 
-  // The same gateway, reached from inside a given container's network. Used
-  // only when a rule pointing at a container's own address is refused because
-  // of where it was asked from - see namespace.ts.
-  //
-  // The relay runs Portical's own image, so an explicit --helper-image is only
-  // needed when we cannot work out what we are running as.
-  const helperImage = parsed.explicitHelperImage ?? (await ownImage(docker)) ?? DEFAULT_HELPER_IMAGE;
-  const asContainer = (container: string) =>
-    new UpnpGateway(
-      viaContainer(docker, container, helperImage),
-      gateway.controlUrl,
-      gateway.serviceType,
-    );
+  for (const name of parsed.sources) {
+    if (name === "docker") {
+      note(`Talking to Docker at ${parsed.socket}`);
+      const docker = new HttpDockerClient(overUnixSocket(parsed.socket));
+      sources.push(new DockerSource(docker, options));
 
-  const portical = new Portical(new DockerSource(docker, options), gateway, options, note, asContainer);
+      // The same gateway, reached from inside a given container's network.
+      // Used only when a rule pointing at a container's own address is
+      // refused because of where it was asked from - see namespace.ts.
+      //
+      // The relay runs Portical's own image, so an explicit --helper-image is
+      // only needed when we cannot work out what we are running as.
+      const helperImage = parsed.explicitHelperImage ?? (await ownImage(docker)) ?? DEFAULT_HELPER_IMAGE;
+      asContainer = (container: string) =>
+        new UpnpGateway(
+          viaContainer(docker, container, helperImage),
+          gateway.controlUrl,
+          gateway.serviceType,
+        );
+    } else {
+      const bus = systemBusPath(Bun.env);
+      note(`Talking to systemd over ${bus}, reading ${parsed.systemdKey}`);
+      sources.push(new SystemdSource(new DbusSystemdClient(bus), { key: parsed.systemdKey, hostAddress }));
+    }
+  }
+
+  const portical = new Portical(combine(sources), gateway, options, note, asContainer);
 
   if (options.dryRun) note("Dry run - nothing will be changed");
 

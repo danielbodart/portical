@@ -281,7 +281,7 @@ export class Portical {
     signal.addEventListener("abort", () => clearInterval(ticker), { once: true });
 
     this.log(
-      `Watching for container changes, reconciling every ${this.options.interval}s...`,
+      `Watching for changes, reconciling every ${this.options.interval}s...`,
     );
 
     try {

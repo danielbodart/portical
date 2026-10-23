@@ -159,3 +159,34 @@ describe("firstGatewayAmong", () => {
     await expect(failure).rejects.toThrow(/Set --root/);
   });
 });
+
+describe("choosing sources", () => {
+  test("is Docker alone by default, as it always was", () => {
+    expect(parseArguments([], {}).sources).toEqual(["docker"]);
+  });
+
+  test("takes --source, repeated or comma separated, in order", () => {
+    expect(parseArguments(["--source", "systemd"], {}).sources).toEqual(["systemd"]);
+    expect(parseArguments(["-s", "systemd", "-s", "docker"], {}).sources).toEqual(["systemd", "docker"]);
+    expect(parseArguments(["--source", "docker, systemd"], {}).sources).toEqual(["docker", "systemd"]);
+  });
+
+  test("reads PORTICAL_SOURCES, and the command line replaces it", () => {
+    expect(parseArguments([], { PORTICAL_SOURCES: "systemd,docker" }).sources).toEqual(["systemd", "docker"]);
+    expect(parseArguments(["-s", "docker"], { PORTICAL_SOURCES: "systemd" }).sources).toEqual(["docker"]);
+  });
+
+  test("names each source once", () => {
+    expect(parseArguments(["-s", "systemd,systemd"], {}).sources).toEqual(["systemd"]);
+  });
+
+  test("refuses a source it does not know", () => {
+    expect(() => parseArguments(["--source", "podman"], {})).toThrow("unknown source 'podman'");
+  });
+
+  test("reads the unit file key from --systemd-key or PORTICAL_SYSTEMD_KEY", () => {
+    expect(parseArguments([], {}).systemdKey).toBe("X-Portical-Forward");
+    expect(parseArguments([], { PORTICAL_SYSTEMD_KEY: "X-Forward" }).systemdKey).toBe("X-Forward");
+    expect(parseArguments(["--systemd-key", "X-Other"], { PORTICAL_SYSTEMD_KEY: "X-Forward" }).systemdKey).toBe("X-Other");
+  });
+});

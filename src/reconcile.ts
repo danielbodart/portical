@@ -192,7 +192,7 @@ export function reconcile(
     if (wanted.has(identity(mapping)) || !isOurs(mapping)) continue;
 
     if (managed(mapping)) {
-      actions.push({ kind: "remove", mapping, reason: "no container asks for it" });
+      actions.push({ kind: "remove", mapping, reason: "nothing asks for it any more" });
       continue;
     }
 
