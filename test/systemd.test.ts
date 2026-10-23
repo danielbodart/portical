@@ -392,7 +392,7 @@ describe("SystemdSource", () => {
     });
   });
 
-  test("logs events only for units that declare forwards", async () => {
+  test("logs where a unit that declares forwards settles, and nothing else", async () => {
     const { systemd, host, source } = fixture();
     host.files["/etc/systemd/system/mc.service"] = "[Unit]\nX-Portical-Forward=25565\n";
     systemd.running = [unit("mc.service")];
@@ -403,14 +403,15 @@ describe("SystemdSource", () => {
     const reading = (async () => {
       for await (const event of source.events(controller.signal)) seen.push(event);
     })();
-    systemd.emit({ unit: "mc.service", state: "inactive" });
-    systemd.emit({ unit: "cron.service", state: "active" });
+    systemd.emit({ unit: "mc.service", state: "deactivating" });
+    systemd.emit({ unit: "mc.service", state: "inactive", previous: "deactivating" });
+    systemd.emit({ unit: "cron.service", state: "active", previous: "activating" });
     systemd.emit({});
     await Bun.sleep(10);
     controller.abort();
     await reading;
 
-    expect(seen).toEqual([{ description: "Unit mc.service inactive" }, {}, {}]);
+    expect(seen).toEqual([{}, { description: "Unit mc.service inactive" }, {}, {}]);
   });
 });
 
@@ -580,7 +581,7 @@ describe("DbusSystemdClient", () => {
     expect(await client.units()).toHaveLength(1);
   });
 
-  test("subscribes, and turns signals into events until aborted", async () => {
+  test("subscribes, and turns state changes into events until aborted", async () => {
     bus = await FakeBus.start();
     bus.answer = systemd;
     const client = new DbusSystemdClient(bus.path);
@@ -606,6 +607,14 @@ describe("DbusSystemdClient", () => {
       signature: "sa{sv}as",
       body: ["org.freedesktop.systemd1.Unit", { ActiveState: new Variant("s", "deactivating") }, []],
     });
+    // The same state again, as systemd sends with any property change.
+    bus.signal({
+      path: SSHD,
+      interface: "org.freedesktop.DBus.Properties",
+      member: "PropertiesChanged",
+      signature: "sa{sv}as",
+      body: ["org.freedesktop.systemd1.Unit", { ActiveState: new Variant("s", "deactivating") }, []],
+    });
     bus.signal({
       path: "/org/freedesktop/systemd1",
       interface: "org.freedesktop.systemd1.Manager",
@@ -616,6 +625,35 @@ describe("DbusSystemdClient", () => {
     await reading;
 
     expect(events).toEqual([{ unit: "sshd.service", state: "deactivating" }, {}]);
+  });
+
+  test("says where a unit was before, once it has been seen", async () => {
+    bus = await FakeBus.start();
+    bus.answer = systemd;
+    const client = new DbusSystemdClient(bus.path);
+    const controller = new AbortController();
+    const events: unknown[] = [];
+    const reading = (async () => {
+      for await (const event of client.events(controller.signal)) {
+        events.push(event);
+        if (events.length === 2) controller.abort();
+      }
+    })();
+    while (!bus.calls.some((c) => c.member === "Subscribe")) await Bun.sleep(5);
+    for (const state of ["deactivating", "inactive"]) {
+      bus.signal({
+        path: SSHD,
+        interface: "org.freedesktop.DBus.Properties",
+        member: "PropertiesChanged",
+        signature: "sa{sv}as",
+        body: ["org.freedesktop.systemd1.Unit", { ActiveState: new Variant("s", state) }, []],
+      });
+    }
+    await reading;
+    expect(events).toEqual([
+      { unit: "sshd.service", state: "deactivating" },
+      { unit: "sshd.service", state: "inactive", previous: "deactivating" },
+    ]);
     await Bun.sleep(10);
     expect(bus.connected).toBe(0);
   });

@@ -31,6 +31,11 @@ export interface Unit {
 export interface SystemdEvent {
   readonly unit?: string;
   readonly state?: string;
+  /**
+   * The state this unit was last seen in on this stream. Absent the first
+   * time, when all that is known is where it is now, not that it moved.
+   */
+  readonly previous?: string;
 }
 
 /**
@@ -76,11 +81,16 @@ export interface SystemdOptions {
  */
 export class SystemdSource implements Source {
   /**
-   * The units that declared forwards on the last pass, so their events are
+   * Every unit that has declared forwards this run, so their events are
    * logged and everyone else's are not. Every unit's events still ask for a
    * pass, because any unit can start declaring one.
+   *
+   * Never shrinks. A unit that stops drops out of the very pass its first
+   * event triggers, so by the time its stream reaches "inactive" it would no
+   * longer be declaring anything, and the line that says why its forward
+   * went would be the one left out.
    */
-  private declaring = new Set<string>();
+  private readonly declaring = new Set<string>();
 
   constructor(
     private readonly systemd: SystemdClient,
@@ -92,7 +102,6 @@ export class SystemdSource implements Source {
     const key = this.options.key ?? FORWARD_KEY;
     const forwards: DesiredForward[] = [];
     const warnings: string[] = [];
-    const declaring = new Set<string>();
 
     const units = await this.systemd.units();
     const declarations = await Promise.all(
@@ -104,7 +113,7 @@ export class SystemdSource implements Source {
       for (const warning of declared.warnings) warnings.push(`${unit.name}: ${warning}`);
       if (declared.value === "") continue;
 
-      declaring.add(unit.name);
+      this.declaring.add(unit.name);
       const terms = parseLabel(declared.value);
       for (const error of terms.errors) warnings.push(`${unit.name}: ${error}`);
       if (unit.needDaemonReload) {
@@ -132,13 +141,15 @@ export class SystemdSource implements Source {
       }
     }
 
-    this.declaring = declaring;
     return { forwards, warnings };
   }
 
   async *events(signal: AbortSignal): AsyncIterable<SourceEvent> {
     for await (const event of this.systemd.events(signal)) {
-      yield event.unit && event.state && this.declaring.has(event.unit)
+      // Only where a unit settles, not each step on the way there, and only
+      // once it is known to have moved there.
+      const moved = event.previous !== undefined && event.state !== undefined && SETTLED.has(event.state);
+      yield event.unit && moved && this.declaring.has(event.unit)
         ? { description: `Unit ${event.unit} ${event.state}` }
         : {};
     }
@@ -171,6 +182,8 @@ export class SystemdSource implements Source {
     return listening(sockets, groups, this.options.hostAddress);
   }
 }
+
+const SETTLED = new Set(["active", "inactive", "failed"]);
 
 interface UnitFile {
   readonly path: string;
@@ -517,9 +530,19 @@ export class DbusSystemdClient implements SystemdClient {
     };
     signal.addEventListener("abort", stop);
     bus.onClose((error) => events.fail(error));
+    // systemd sends ActiveState with every change to a unit's properties,
+    // whether or not it moved, so only a state that differs from the last one
+    // seen for that unit is passed on.
+    const states = new Map<string, string | undefined>();
     bus.onSignal((message) => {
       const event = toEvent(message);
-      if (event) events.push(event);
+      if (!event) return;
+      if (event.unit === undefined) return events.push(event);
+      const seen = states.has(event.unit);
+      const previous = states.get(event.unit);
+      if (seen && previous === event.state) return;
+      states.set(event.unit, event.state);
+      events.push(seen ? { ...event, previous } : event);
     });
 
     try {
@@ -547,8 +570,7 @@ const MATCHES = [
 ];
 
 /**
- * The signals worth a pass: a unit's ActiveState changing, and a reload
- * finishing. Everything else a unit says about itself - and it says a lot -
+ * The signals worth a pass: a unit's ActiveState, and a reload finishing. Everything else a unit says about itself - and it says a lot -
  * cannot change what it forwards.
  */
 export function toEvent(message: Message): SystemdEvent | undefined {

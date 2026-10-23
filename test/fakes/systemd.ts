@@ -39,12 +39,12 @@ export class FakeSystemd implements SystemdClient {
 
   start(unit: Unit): void {
     this.running.push(unit);
-    this.emit({ unit: unit.name, state: "active" });
+    this.emit({ unit: unit.name, state: "active", previous: "inactive" });
   }
 
   stop(name: string): void {
     this.running = this.running.filter((unit) => unit.name !== name);
-    this.emit({ unit: name, state: "inactive" });
+    this.emit({ unit: name, state: "inactive", previous: "active" });
   }
 
   emit(event: SystemdEvent): void {
