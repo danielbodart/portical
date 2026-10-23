@@ -70,6 +70,8 @@ export interface Source {
  * is warned about - the same first-wins rule as within a label.
  */
 export function combine(sources: readonly Source[]): Source {
+  // Nothing to combine would want nothing, and take every forward down.
+  if (sources.length === 0) throw new Error("combine needs at least one source");
   if (sources.length === 1) return sources[0]!;
 
   return {

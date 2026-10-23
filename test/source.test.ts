@@ -38,6 +38,10 @@ describe("combine", () => {
     expect(combine([only])).toBe(only);
   });
 
+  test("refuses no sources at all, rather than wanting nothing", () => {
+    expect(() => combine([])).toThrow("at least one source");
+  });
+
   test("wants what every source wants, in the order they were named", async () => {
     const docker = new StubSource({ forwards: [forward("nginx", 80)], warnings: ["nginx: something"] });
     const systemd = new StubSource({ forwards: [forward("mc.service", 25565)], warnings: [] });

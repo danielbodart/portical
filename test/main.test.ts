@@ -184,6 +184,12 @@ describe("choosing sources", () => {
     expect(() => parseArguments(["--source", "podman"], {})).toThrow("unknown source 'podman'");
   });
 
+  test("refuses an empty list, which would take every forward down", () => {
+    expect(() => parseArguments(["--source", ","], {})).toThrow("at least one of docker, systemd");
+    expect(() => parseArguments(["--source", ""], {})).toThrow("at least one of docker, systemd");
+    expect(() => parseArguments([], { PORTICAL_SOURCES: " , " })).toThrow("at least one of docker, systemd");
+  });
+
   test("reads the unit file key from --systemd-key or PORTICAL_SYSTEMD_KEY", () => {
     expect(parseArguments([], {}).systemdKey).toBe("X-Portical-Forward");
     expect(parseArguments([], { PORTICAL_SYSTEMD_KEY: "X-Forward" }).systemdKey).toBe("X-Forward");

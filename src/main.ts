@@ -159,12 +159,16 @@ export function parseArguments(argv: readonly string[], env: Record<string, stri
 }
 
 function sourceNames(value: string): SourceName[] {
-  return value.split(",").map((name) => name.trim()).filter((name) => name !== "").map((name) => {
+  const names = value.split(",").map((name) => name.trim()).filter((name) => name !== "").map((name) => {
     if (!(SOURCES as readonly string[]).includes(name)) {
       throw new Error(`unknown source '${name}', expected one of ${SOURCES.join(", ")}`);
     }
     return name as SourceName;
   });
+  // No sources would want no forwards, and the first pass would take down
+  // every one Portical owns on the gateway.
+  if (names.length === 0) throw new Error(`a source list needs at least one of ${SOURCES.join(", ")}, got '${value}'`);
+  return names;
 }
 
 /** A path to v1's shell script, or to the v2 binary, used as argv[0]. */
