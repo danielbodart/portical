@@ -9,8 +9,10 @@ units, declared with a key in the unit file, so that a service that runs
 natively on the host - NixOS especially - gets the same forwards a labelled
 container does.
 
-Status: the `Source` seam and `DockerSource` exist (see `src/source.ts`). The
-rest of this document is the plan.
+Status: implemented - `src/source.ts` (the seam and `combine()`),
+`src/systemd.ts`, `src/dbus.ts`, and the flake in `flake.nix` and `nix/`. Where
+the build proved the plan wrong, this document has been corrected to match
+what was built, and the open questions at the end are answered.
 
 ## The Source seam
 
@@ -241,9 +243,9 @@ is matched against the unit:
 
 Only binds that the gateway's traffic could reach count:
 
-- `0.0.0.0`, `*`, and `[::]` (Linux's default `bindv6only=0` makes an IPv6
-  wildcard take IPv4 too, and `ss` cannot tell us otherwise), or the host
-  address itself.
+- `0.0.0.0`, `*`, and `[::]` unless `ss` marks it `v6only:1` (with
+  Linux's default `bindv6only=0` an IPv6 wildcard takes IPv4 too; `ss -e`
+  prints `v6only:1` on the sockets that do not), or the host address itself.
 - Not loopback, link-local, other specific addresses, or interface-scoped
   binds (`%lo`).
 
@@ -270,20 +272,34 @@ Explicit terms are the recommended form; `published` is a convenience.
 
 On the same bus connection:
 
-1. `Manager.Subscribe()`, without which systemd sends no unit signals.
-   Allowed for any user by systemd's bus policy; checked unprivileged on the
-   development host.
-2. `AddMatch` for `UnitNew`, `UnitRemoved`, `JobRemoved` and `Reloading` on
-   `org.freedesktop.systemd1.Manager`, and `PropertiesChanged` with
-   `arg0='org.freedesktop.systemd1.Unit'` under
+1. `AddMatch` for `Reloading` on `org.freedesktop.systemd1.Manager`, and
+   `PropertiesChanged` with `arg0='org.freedesktop.systemd1.Unit'` under
    `path_namespace='/org/freedesktop/systemd1/unit'`.
+2. `Manager.Subscribe()`, without which systemd sends no unit signals.
+   Allowed for any user by systemd's bus policy; checked unprivileged on the
+   development host and as the module's DynamicUser in the VM test.
 
-Each of these is an event, except `PropertiesChanged` that does not include
-`ActiveState` and `Reloading(true)` (the reload starting rather than
-finishing). Any unit can start carrying the key, so every unit's events ask for
-a pass, but only units that carried the key on the last pass get a log line
-(`Unit minecraft.service started`, from `JobRemoved`); the rest come through
-without a description.
+`UnitNew`, `UnitRemoved` and `JobRemoved` turned out to add nothing: whatever
+they announce that matters also moves a unit's `ActiveState`.
+`Reloading(false)` is an event (a daemon-reload may have changed the files);
+`Reloading(true)` is not, since the old configuration is live until it ends.
+
+systemd sends `ActiveState` with every change to *any* of a unit's
+properties, whether or not the state moved - seen on the development host, a
+unit starting produces several signals all saying `active`. So the client
+keeps the last state it saw per unit and passes a signal on only when the
+state differs, with the state it moved from (`previous`, absent the first
+time a unit is seen on this stream). Any unit can start carrying the key, so
+every such event asks for a pass, but only a unit that has declared forwards
+at some point this run, reaching `active`, `inactive` or `failed` from a state
+it was seen in, gets a log line (`Unit minecraft.service inactive`); the rest
+come through without a description. The set of declaring units never shrinks:
+a stopping unit drops out of the pass its first event triggers, so a set
+rebuilt each pass would leave out exactly the line explaining why its forward
+went.
+
+As for Docker, the stream is opened after the first pass, so a unit that
+changes between the two is caught by the interval rather than an event.
 
 The bus dropping ends the stream with an error, and `run()` reconnects as it
 does for Docker. If the bus cannot be reached at all the interval still
@@ -302,11 +318,16 @@ A small hand-written client over `/run/dbus/system_bus_socket`, mirroring
 ```ts
 export interface Unit {
   readonly name: string;
-  readonly activeState: string;
   readonly fragmentPath: string;
   readonly dropInPaths: readonly string[];
   readonly triggeredBy: readonly string[];
   readonly needDaemonReload: boolean;
+}
+
+export interface SystemdEvent {
+  readonly unit?: string;
+  readonly state?: string;
+  readonly previous?: string;
 }
 
 export interface SystemdClient {
@@ -324,16 +345,16 @@ lines, but it keeps Portical at zero runtime dependencies, which is what keeps
 the Nix build a plain `bun build` with no dependency derivation at all.
 `dbus-next` is the alternative if it works under Bun; see the open questions.
 
-`SystemdSource` takes a `SystemdClient`, a file reader
-(`(path) => Promise<string>`, plus a stat for the cache) and a listener
-lister (`() => Promise<string>`, the `ss` output), so every part of it can be
-driven by a fake.
+`SystemdSource` takes a `SystemdClient` and a `Host` - `read(path)` (cached by
+inode, size and mtime in the real one), `listeners()` (the `ss` output) and
+`ephemeralPorts()` - so every part of it can be driven by a fake. A pass on the
+development host, 339 active units, takes about 140 ms.
 
 ## Command line
 
 | Flag                 | Env                    | Meaning                                        |
 |----------------------|------------------------|------------------------------------------------|
-| `--source NAME`      | `PORTICAL_SOURCES`     | `docker` or `systemd`. Repeatable, or comma separated (`docker,systemd`). Default `docker`, so nothing changes for anyone already running Portical. |
+| `-s`, `--source NAME` | `PORTICAL_SOURCES`    | `docker` or `systemd`. Repeatable, or comma separated (`docker,systemd`). Default `docker`, so nothing changes for anyone already running Portical. The first flag replaces the variable's list rather than adding to it. |
 | `--systemd-key KEY`  | `PORTICAL_SYSTEMD_KEY` | The unit file key to read (default `X-Portical-Forward`). |
 
 `--label`, `--network-label`, `--docker-socket` and `--helper-image` only mean
@@ -347,20 +368,22 @@ units", and "Watching for container changes" becomes "Watching for changes".
 
 ### Flake
 
-`flake.nix` with `nixpkgs` as its only input, for `x86_64-linux` and
-`aarch64-linux`:
+`flake.nix` with `nixpkgs` (unstable, whose Bun is 1.4.2, the version
+`mise.toml` pins) as its only input, for `x86_64-linux` and `aarch64-linux`.
+The pieces are in `nix/`: `package.nix`, `module.nix`, `module-check.nix` and
+`vm-test.nix`.
 
 - `packages.<system>.default` - `bun build --compile` of `src/main.ts`, as
   `run.ts build` does, with `PORTICAL_VERSION` defined from `package.json`'s
   major and the flake's `lastModifiedDate`/`shortRev`. With no runtime
   dependencies there is nothing to fetch, so it builds in the sandbox from the
   source alone. A compiled Bun binary is Bun with the bundle appended, so
-  `dontStrip` and `dontPatchELF` (or `dontFixup`): stripping or rewriting it
-  loses the bundle. Wrapped with `makeWrapper` to put `iproute2` on `PATH` for
-  `ss`. If the compiled binary misbehaves under Nix, the fallback is a wrapper
-  that runs `bun run` on the sources in the store.
-- `checks.<system>` - the package; `bun test` in the sandbox (the tests use
-  in-memory fakes and no network); the module evaluation check; the VM test.
+  `dontStrip` and `dontPatchELF`: stripping or rewriting it loses the bundle.
+  Wrapped with `makeWrapper` to put `iproute2` on `PATH` for `ss`. The
+  compiled binary works as built; no `bun run` fallback was needed. `bun
+  test` runs as the package's `checkPhase`.
+- `checks.<system>` - the package (and so `bun test`); the module evaluation
+  check; the VM test.
 - `nixosModules.default`.
 
 ### Module
@@ -421,10 +444,14 @@ The service:
 - `ProtectSystem = "strict"`, `ProtectHome`, `PrivateTmp`, `PrivateDevices`,
   `ProtectKernelTunables`, `ProtectKernelModules`, `ProtectKernelLogs`,
   `ProtectControlGroups` (read-only is enough: `ss` only reads cgroupfs to name
-  a cgroup), `ProtectClock`, `ProtectHostname`, `RestrictNamespaces`,
-  `RestrictRealtime`, `RestrictSUIDSGID`, `LockPersonality`,
-  `SystemCallArchitectures = "native"`, `SystemCallFilter = [ "@system-service"
-  "~@privileged" "~@resources" ]`, `UMask = "0077"`.
+  a cgroup), `ProtectClock`, `ProtectHostname`, `ProtectProc = "invisible"`,
+  `RestrictNamespaces`, `RestrictRealtime`, `RestrictSUIDSGID`,
+  `LockPersonality`, `SystemCallArchitectures = "native"`, `SystemCallFilter =
+  [ "@system-service" "~@privileged" ]`, `UMask = "0077"`. The VM test runs
+  under all of it, `published` included.
+- Not `~@resources`, which forbids calls a JavaScript runtime may reasonably
+  make for its own threads, for no gain here. Not `PrivateUsers`: it would
+  leave the `docker` group unmapped.
 - Not `MemoryDenyWriteExecute`: Bun's JIT needs writable executable memory.
   Not `PrivateNetwork`: the whole point is the LAN.
 - The system bus needs nothing extra: systemd's bus policy already lets any
@@ -446,21 +473,27 @@ description will recommend setting `root`.
 
 ### VM test
 
-`nixosTest` with two nodes:
+`runNixOSTest` with three nodes, laid out as nixpkgs' own `upnp` test:
 
-- `gateway`: two interfaces, `services.miniupnpd` (nftables) with
-  `appendConfig = "http_port=5000"` so the root URL is known.
-- `host`: `services.portical` with `root = "http://gateway:5000/rootDesc.xml"`,
-  a service running a trivial TCP listener with `portical.forward = [
-  "8080/tcp" ]`, and one with `portical.forward = [ "published" ]`.
+- `router`: two interfaces with NAT, `services.miniupnpd` with
+  `appendConfig = "http_port=5000"` so the root URL is known. nftables, since
+  miniupnpd's iptables backend cannot initialise in the VM.
+- `host`: `services.portical` with that root, `interval = 3600` so every change
+  after the first pass has to arrive as an event, `openFirewall`, a Python
+  HTTP server on 8080 with `portical.forward = [ "8080/tcp" ]`, and one on 9090
+  with `portical.forward = [ "published" ]`.
+- `client`: outside the router, to `curl` both forwards through it.
 
-The script waits for both mappings in `upnpc -l` (from `miniupnpc`), stops a
-service and waits for its mapping to go, and adds a drop-in with an empty
-`X-Portical-Forward=` to the other and waits for that one to go too.
+The script checks the rendered `X-Portical-Forward` line, waits for both
+mappings in `upnpc -l`, curls both from outside, stops a service and waits for
+its mapping and its `Unit explicit.service inactive` line, adds a drop-in with
+an empty `X-Portical-Forward=` to the other and `daemon-reload`s, waits for
+that mapping to go, and checks the service ran as a non-root user with no
+`Error:` or `Warning:` in its journal.
 
-If miniupnpd proves too fiddly in a VM, the fallback is an evaluation check:
-a NixOS configuration with `portical.forward` set, asserting the rendered unit
-text and the service's `ExecStart`.
+There is also `checks.module`: a NixOS evaluation with `portical.forward` set,
+asserting the rendered unit text, the service's `ExecStart` and what
+`openFirewall` opened, for a machine without KVM.
 
 ## Test plan
 
@@ -509,29 +542,22 @@ drop-in example and the reset rule, `published` and its UDP caveat, the
 and `systemd.services.<name>.portical.forward`; and a line in "Limits worth
 knowing" about one Portical per host.
 
-## Open questions
+## Decisions on the open questions
 
-1. **Hand-written D-Bus client or `dbus-next`.** The design assumes hand-written,
-   to keep zero runtime dependencies and the Nix build free of a dependency
-   derivation. `dbus-next` under Bun has not been tried; if it works it saves
-   the marshalling code at the cost of a fixed-output `node_modules`.
-2. **Which Bun the flake builds with.** nixpkgs has 1.3.13 today; `mise.toml`
-   pins 1.4.2, and the image is checked against it. Fetching the pinned
-   release as a fixed-output derivation keeps one Bun everywhere; nixpkgs' is
-   simpler.
-3. **`%i` in templates.** `X-Portical-Forward=%i/udp` on `game@.service` would
-   let `game@25565.service` forward its own instance. Supporting `%i`, `%I`
-   and `%%` only is small and could come later.
-4. **Naming in the core.** `DesiredForward.container` and messages such as "no
-   container asks for it" and "for nginx" would read oddly for a unit. Rename
-   the field to `owner` and the reasons to "nothing asks for it" when the
-   systemd source lands, or leave them?
-5. **Default sources.** The CLI keeps `docker` as its default so existing
-   installs are untouched; the module defaults to `systemd`. Should the CLI
-   instead pick whichever of the Docker socket and the system bus it finds?
-6. **`openFirewall`** is not in the original brief. It is cheap and covers the
-   common mistake of forwarding a port the host's own firewall then drops, but
-   could be left to the user.
-7. **The description** carries the full unit name (`minecraft.service`).
-   Dropping the `.service` suffix is shorter on routers that truncate, at the
-   cost of being ambiguous with a container of the same name.
+1. **Hand-written D-Bus client** (`src/dbus.ts`, about 600 lines). It works
+   against the real system bus unprivileged and in the VM; `dbus-next` was not
+   tried.
+2. **Bun comes from nixos-unstable**, which has 1.4.2 - the version
+   `mise.toml` pins - so no fixed-output fetch of Bun was needed. The lock is
+   pinned to the same unstable revision as the development host's system.
+3. **`%i` is not expanded.** A term containing it is reported as unrecognised.
+   Still small to add later.
+4. **`DesiredForward.container` keeps its name**, as the owner's name for logs
+   and the description. The daemon's wording no longer assumes containers:
+   "Watching for changes", and removals say "nothing asks for it any more".
+   "for <name>" reads fine with a unit name.
+5. **The CLI defaults to `docker`**, so existing installs are untouched; the
+   module defaults to `[ "systemd" ]`. No detection.
+6. **`openFirewall` is in**, default off.
+7. **The description carries the full unit name** (`portical: (25565:25565/tcp)
+   minecraft.service`), unambiguous against a container called `minecraft`.

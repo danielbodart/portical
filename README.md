@@ -3,12 +3,13 @@
 # Portical
 
 ## Overview
-Portical manages UPnP port forwarding rules for Docker containers.
-Set one label on a container and its ports are forwarded on your internet gateway.
+Portical manages UPnP port forwarding rules for Docker containers and systemd units.
+Set one label on a container, or one key in a unit file, and its ports are forwarded
+on your internet gateway.
 It was inspired by [Traefik Proxy](https://traefik.io/traefik/) autoconfiguration of HTTP port forwarding rules.
 
 ## Requirements
-- Some Docker containers you want to expose to the internet
+- Some Docker containers or systemd services you want to expose to the internet
 - UPnP-enabled internet gateway (tested on Google Nest Wifi running OpenWRT)
 - 64-bit Linux, `amd64` or `arm64`. The published image is both, so a Pi 4/5 or
   an ARM NAS pulls the right one. 32-bit ARM (`armv7`, a Pi on 32-bit Raspberry
@@ -65,6 +66,65 @@ labels:
   - 'portical.upnp.network=lan'
 ```
 
+### systemd units
+
+A service running natively on the host declares its forwards with
+`X-Portical-Forward` in its unit file, in exactly the label's grammar:
+
+```ini
+[Unit]
+Description=Minecraft server
+X-Portical-Forward=25565/tcp
+X-Portical-Forward=19133:19132/udp
+
+[Service]
+ExecStart=/opt/minecraft/start
+```
+
+Run Portical with `--source systemd` (or `PORTICAL_SOURCES=systemd`) to read them.
+Only active units are forwarded, so a unit's forwards are removed when it stops,
+the same way a container's are. Every forward points at the host's own address on
+the LAN.
+
+systemd ignores keys starting `X-`, so the line is harmless on a host without
+Portical. It can go in `[Unit]` or the unit type's own section (`[Service]`,
+`[Socket]`, ...), in the unit file or in a drop-in, which is how to add it to a
+unit you did not write:
+
+```shell
+sudo systemctl edit minecraft.service
+```
+
+```ini
+[Unit]
+X-Portical-Forward=25565/tcp
+```
+
+It reads like any systemd list setting: each line adds to the ones before it,
+across the unit file and its drop-ins, and an empty `X-Portical-Forward=` throws
+away everything before it. So a drop-in with only the empty line turns a unit's
+forwards off, and one with the empty line followed by new values replaces them.
+Portical reads the files on disk, so after editing one by hand, run
+`systemctl daemon-reload` as usual - Portical warns while a unit's files are newer
+than what systemd has loaded.
+
+`published` means the ports the unit is listening on, found by matching each
+listening socket's cgroup (from `ss -e`) to the unit's - including sockets of a
+`.socket` unit that activates it. Only binds on all addresses or on the host's LAN
+address count. It is a convenience, and explicit ports are the recommended form:
+
+- **UDP is a guess.** Every bound UDP socket looks like a listener, including ones a
+  service opened to talk out. Those use ephemeral ports, so UDP ports in
+  `ip_local_port_range` are skipped; a UDP server on such a port has to be named
+  explicitly.
+- **A port opened after the unit started** is picked up by the next interval pass
+  rather than straight away, since systemd announces nothing when a running service
+  starts listening.
+- It needs Linux 5.7 and iproute2 5.9 or later, for the socket's cgroup.
+
+Templates' `%i` is not expanded. Portical needs no privileges for this source: the
+system bus lets any user list units and subscribe to their changes.
+
 ### Part 2: Running Portical
 
 #### Commands
@@ -82,6 +142,8 @@ things, and neither was complete on its own - see [What changed in v2](#what-cha
 | --- | --- |
 | `-r`, `--root URL` | UPnP root description URL. Skips discovery, and is much faster. |
 | `-d`, `--duration SECONDS` | Seconds between reconcile passes (default `15`). |
+| `-s`, `--source NAME` | Where forwards are declared: `docker`, `systemd`, or both as `docker,systemd`. Repeatable (default `docker`). The first named wins a port both ask for. |
+| `--systemd-key KEY` | Unit file key to read (default `X-Portical-Forward`). |
 | `-l`, `--label LABEL` | Container label to read (default `portical.upnp.forward`). |
 | `--network-label LABEL` | Label naming which network to forward to (default `portical.upnp.network`). |
 | `--lease SECONDS` | Lease to request; `0` never expires (default `0`). |
@@ -95,8 +157,10 @@ things, and neither was complete on its own - see [What changed in v2](#what-cha
 | `--cleanup-on-exit` | Remove Portical's mappings on shutdown. |
 | `--version` | Show the version and exit. |
 
-Environment variables: `PORTICAL_UPNP_ROOT_URL` (same as `--root`) and
-`PORTICAL_POLL_INTERVAL` (same as `--duration`).
+Environment variables: `PORTICAL_UPNP_ROOT_URL` (same as `--root`),
+`PORTICAL_POLL_INTERVAL` (same as `--duration`), `PORTICAL_SOURCES` (same as
+`--source`) and `PORTICAL_SYSTEMD_KEY` (same as `--systemd-key`). The systemd
+source finds the system bus at `DBUS_SYSTEM_BUS_ADDRESS`, as any D-Bus client does.
 
 #### Checking it works
 
@@ -150,6 +214,36 @@ services:
       - 'portical.upnp.forward=8000:80/tcp'
 ```
 
+### NixOS
+
+The repository is a flake with a package and a NixOS module:
+
+```nix
+# flake.nix
+inputs.portical.url = "github:danielbodart/portical";
+
+# configuration.nix, with inputs.portical.nixosModules.default imported
+services.portical = {
+  enable = true;
+  root = "http://192.168.1.1:5000/rootDesc.xml";
+  # sources = [ "systemd" "docker" ];  # systemd alone by default
+};
+
+systemd.services.minecraft.portical.forward = [ "25565/tcp" "19133:19132/udp" ];
+```
+
+`portical.forward` is added to every `systemd.services.<name>` and is written into
+the unit as `X-Portical-Forward` lines, checked against the grammar when the
+configuration is evaluated. It works whether or not `services.portical` is enabled
+in the same place. Portical runs as a dynamic user with no capabilities.
+
+Set `root`: SSDP discovery through the NixOS firewall usually fails, because the
+gateway's reply comes from its own address to an ephemeral port that the firewall
+does not connect to the multicast search. `openFirewall = true` opens the internal
+port of every `portical.forward` term (not `published`, which is only known at run
+time). Other options: `interval`, `leaseDuration`, `renewWithin`, `steal`,
+`manageAll`, `cleanupOnExit`, `dockerSocket` and `extraArgs`.
+
 `depends_on: portical` is no longer needed. Portical reconciles from the current
 state of Docker on every pass, so a container that starts first, or while Portical
 is down, is picked up regardless.
@@ -158,16 +252,17 @@ is down, is picked up regardless.
 
 Portical compares two things and makes the second look like the first:
 
-- **Wanted**: containers carrying the label, and the rules those labels ask for.
+- **Wanted**: containers carrying the label, active units carrying the key, and the
+  rules they ask for.
 - **Actual**: the mappings currently on the gateway.
 
 Anything wanted but missing is added, anything of Portical's that nothing wants any
 more is removed, and anything already correct is *left alone*. Mappings belonging to
 other tools are never touched unless you pass `--steal`.
 
-Both the Docker event stream and the interval do nothing but ask for another
-comparison, so container changes are picked up immediately and expiring leases are
-still noticed.
+The Docker event stream, systemd's unit signals and the interval do nothing but
+ask for another comparison, so changes are picked up immediately and expiring
+leases are still noticed.
 
 ### Leases, and why renewal does not interrupt anything
 
@@ -252,6 +347,8 @@ bun run.ts test
 bun run.ts check   # typecheck
 bun run.ts build   # compiles a standalone binary into dist/
 bun run.ts image   # builds both architectures locally
+nix build          # the Nix package, running the tests on the way
+nix flake check    # also the module check and the NixOS VM test (needs KVM)
 ```
 
 `run.ts` is the only place any of this is defined, so CI runs the same commands
@@ -312,6 +409,11 @@ case of a container stopping while Portical is running.
 
 Removing it would mean starting a container that claims that address, and an
 address that is free now may not be free later. Portical will not do that.
+
+**Run one Portical per host.** Two on the same host - say a container for Docker
+and a native one for systemd - both forward to the host's address, so each takes the
+other's mappings for its own, finds nothing asking for them, and removes them. Give
+one Portical every source the host needs instead: `--source docker,systemd`.
 
 **Discovery is a fallback, not the happy path.** Anything can answer an SSDP
 search, including devices that claim to be an internet gateway and forward no

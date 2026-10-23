@@ -1,7 +1,7 @@
 {
   "name": "portical",
   "version": "2.0.0",
-  "description": "Manage UPnP port forwarding rules for Docker containers, driven by a label",
+  "description": "Manage UPnP port forwarding rules for Docker containers and systemd units",
   "license": "Apache-2.0",
   "type": "module",
   "module": "src/main.ts",
