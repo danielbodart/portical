@@ -324,8 +324,12 @@ work for `Desired` but costs a process per call.
 ### The D-Bus client
 
 [godbus](https://github.com/godbus/dbus), Portical's one third-party module
-(gokit, its other, is the author's own and only the standard library),
-behind an interface no wider than the source needs:
+(gokit, its other, is the author's own and only the standard library), with
+what every systemd client over godbus needs - finding the system bus, a
+connection whose signals arrive in order, naming a D-Bus error, unit object
+paths, subscribing to systemd - taken from gokit's separate `dbusx` module,
+shared with the sibling daemons. All behind an interface no wider than the
+source needs:
 
 ```go
 // internal/systemd
@@ -349,7 +353,8 @@ type Bus interface {
 ```
 
 `DBus` implements it over the system bus at `DBUS_SYSTEM_BUS_ADDRESS`, or
-`/run/dbus/system_bus_socket`; only `unix:` addresses are taken. It is thin:
+`/run/dbus/system_bus_socket`; only `unix:` addresses are taken
+(`dbusx.SystemBusAddress`). It is thin:
 the calls above and the matches for the two signals, with godbus doing the
 authentication and the wire format. The `GetAll` calls overlap on the one
 connection, at most `InFlight` (32) at a time.
@@ -384,8 +389,8 @@ input, for `x86_64-linux` and `aarch64-linux`. The pieces are in `nix/`:
 
 - `packages.<system>.default` - the same static `go build` as `./run build`,
   with the version from `MAJOR`, the flake's commit count and its
-  `lastModifiedDate` linked in with `-X`. godbus and gokit are vendored by
-  the build's fixed-output `vendorHash`. Nothing is wrapped and nothing goes
+  `lastModifiedDate` linked in with `-X`. godbus, gokit and gokit/dbusx are
+  vendored by the build's fixed-output `vendorHash`. Nothing is wrapped and nothing goes
   on `PATH`: `published` asks the kernel itself. `go test` runs as the
   package's check phase.
 - `checks.<system>` - the package (and so `go test`); the module evaluation
@@ -537,9 +542,12 @@ skip where there is none, as in Nix's build sandbox.
 - **`Combine`** - forwards from both; one source failing fails the pass and
   removes nothing; a slot claimed by both goes to the first source with a
   warning; events from either trigger a pass.
-- **`DBus`** - signals translated into `Change`s, unit paths escaped as
-  systemd does; and, against the real system bus where there is one, listing
-  the host's running units and subscribing until cancelled.
+- **`DBus`** - against gokit's `dbustest` bus: the calls a pass makes and
+  how many wait at once, signals translated into `Change`s, unit changes held
+  until a reload is done, a dropped bus; and, against the real system bus
+  where there is one, listing the host's running units and subscribing until
+  cancelled. The system bus address, unit path escaping and D-Bus error names
+  are tested where they live, in `dbusx`.
 - **Arguments** - `--source` repeated and comma separated,
   `PORTICAL_SOURCES`, an unknown source rejected, `--systemd-key`.
 - **Nix** - `nix flake check`: build, `go test`, module evaluation, VM test.

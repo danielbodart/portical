@@ -10,6 +10,7 @@ import (
 	"os"
 	"syscall"
 
+	"github.com/danielbodart/gokit/dbusx"
 	"github.com/danielbodart/portical/internal/daemon"
 	"github.com/danielbodart/portical/internal/docker"
 	"github.com/danielbodart/portical/internal/source"
@@ -120,7 +121,7 @@ func run(ctx context.Context, c *Container, config Config) error {
 			if closer, ok := bus.(io.Closer); ok {
 				defer closer.Close()
 			}
-			address := cmp.Or(c.Env["DBUS_SYSTEM_BUS_ADDRESS"], systemd.DefaultSystemBus)
+			address := cmp.Or(c.Env["DBUS_SYSTEM_BUS_ADDRESS"], dbusx.DefaultSystemBus)
 			c.Note(fmt.Sprintf("Talking to systemd over %s, reading %s", address, config.SystemdKey))
 			sources = append(sources, systemd.NewSource(bus, c.Sockets, c.Files, c.Ephemeral, systemd.Options{
 				Key: config.SystemdKey, HostAddress: options.HostAddress,

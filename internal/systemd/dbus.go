@@ -4,22 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"strings"
+	"slices"
 	"sync"
 
+	"github.com/danielbodart/gokit/dbusx"
 	"github.com/godbus/dbus/v5"
-)
-
-const (
-	systemd         = "org.freedesktop.systemd1"
-	managerPath     = dbus.ObjectPath("/org/freedesktop/systemd1")
-	manager         = "org.freedesktop.systemd1.Manager"
-	unitIface       = "org.freedesktop.systemd1.Unit"
-	propertiesIface = "org.freedesktop.DBus.Properties"
-	unitPaths       = "/org/freedesktop/systemd1/unit"
-
-	// DefaultSystemBus is where the system bus is when nothing says otherwise.
-	DefaultSystemBus = "unix:path=/run/dbus/system_bus_socket"
 )
 
 // cgroupInterfaces is the unit types that have a ControlGroup, and the
@@ -43,32 +32,20 @@ const InFlight = 32
 // matches are the signals Watch asks the bus for: a unit's properties
 // changing, and systemd reloading.
 var matches = []string{
-	"type='signal',sender='" + systemd + "',interface='" + propertiesIface + "',member='PropertiesChanged'," +
-		"path_namespace='" + unitPaths + "',arg0='" + unitIface + "'",
-	"type='signal',sender='" + systemd + "',interface='" + manager + "',member='Reloading'",
+	"type='signal',sender='" + dbusx.Systemd + "',interface='" + dbusx.Properties + "',member='PropertiesChanged'," +
+		"path_namespace='" + dbusx.UnitPathPrefix + "',arg0='" + dbusx.SystemdUnit + "'",
+	"type='signal',sender='" + dbusx.Systemd + "',interface='" + dbusx.SystemdManager + "',member='Reloading'",
 }
 
-// SystemBus is systemd over the system bus at DBUS_SYSTEM_BUS_ADDRESS, the
-// variable libdbus and sd-bus read, or the standard socket.
-//
-// Only unix: addresses are taken, which is all a system bus has ever been:
-// anything else is far more likely a mistake than a bus. Nothing is connected
-// until the first call.
+// SystemBus is systemd over the system bus at DBUS_SYSTEM_BUS_ADDRESS, or the
+// standard socket - as dbusx.SystemBusAddress finds it, unix: addresses only.
+// Nothing is connected until the first call.
 func SystemBus(env map[string]string) (Bus, error) {
-	address := env["DBUS_SYSTEM_BUS_ADDRESS"]
-	if address == "" {
-		address = DefaultSystemBus
+	address, err := dbusx.SystemBusAddress(env)
+	if err != nil {
+		return nil, err
 	}
-	var usable []string
-	for _, candidate := range strings.Split(address, ";") {
-		if strings.HasPrefix(candidate, "unix:") {
-			usable = append(usable, candidate)
-		}
-	}
-	if len(usable) == 0 {
-		return nil, fmt.Errorf("cannot use DBUS_SYSTEM_BUS_ADDRESS '%s': only unix: addresses are supported", address)
-	}
-	return &DBus{address: strings.Join(usable, ";")}, nil
+	return &DBus{address: address}, nil
 }
 
 // DBus is systemd over D-Bus.
@@ -85,24 +62,13 @@ type DBus struct {
 
 var _ Bus = (*DBus)(nil)
 
-func (b *DBus) connect(options ...dbus.ConnOption) (*dbus.Conn, error) {
-	// In order, so a test can see a unit's changes in the order systemd sent
-	// them; the default handler hands a busy reader's signals to goroutines.
-	options = append(options, dbus.WithSignalHandler(dbus.NewSequentialSignalHandler()))
-	conn, err := dbus.Connect(b.address, options...)
-	if err != nil {
-		return nil, fmt.Errorf("D-Bus at %s: %w", b.address, err)
-	}
-	return conn, nil
-}
-
 func (b *DBus) conn() (*dbus.Conn, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	if b.shared != nil && b.shared.Connected() {
 		return b.shared, nil
 	}
-	conn, err := b.connect()
+	conn, err := dbusx.Connect(b.address)
 	if err != nil {
 		return nil, err
 	}
@@ -139,10 +105,10 @@ func (b *DBus) Units(ctx context.Context) ([]Unit, error) {
 	}
 	var listed []listedUnit
 	// refreshing is a running unit having its mount namespace refreshed.
-	err = conn.Object(systemd, managerPath).CallWithContext(ctx, manager+".ListUnitsByPatterns", 0,
+	err = conn.Object(dbusx.Systemd, dbusx.SystemdPath).CallWithContext(ctx, dbusx.SystemdManager+".ListUnitsByPatterns", 0,
 		[]string{"active", "reloading", "refreshing"}, []string{}).Store(&listed)
 	if err != nil {
-		return nil, fmt.Errorf("listing units: %w", describe(err))
+		return nil, fmt.Errorf("listing units: %w", dbusx.Describe(err))
 	}
 
 	// Overlapping, as the connection matches replies by serial, but only so
@@ -170,9 +136,9 @@ func (b *DBus) Units(ctx context.Context) ([]Unit, error) {
 
 func properties(ctx context.Context, conn *dbus.Conn, entry listedUnit) (Unit, error) {
 	var all map[string]dbus.Variant
-	err := conn.Object(systemd, entry.Path).CallWithContext(ctx, propertiesIface+".GetAll", 0, unitIface).Store(&all)
+	err := conn.Object(dbusx.Systemd, entry.Path).CallWithContext(ctx, dbusx.Properties+".GetAll", 0, dbusx.SystemdUnit).Store(&all)
 	if err != nil {
-		return Unit{}, fmt.Errorf("%s: %w", entry.Name, describe(err))
+		return Unit{}, fmt.Errorf("%s: %w", entry.Name, dbusx.Describe(err))
 	}
 	unit := Unit{Name: entry.Name}
 	// Missing or of another type reads as nothing, as an older systemd may
@@ -194,17 +160,17 @@ func (b *DBus) ControlGroup(ctx context.Context, unit string) (string, error) {
 		return "", err
 	}
 	var group dbus.Variant
-	err = conn.Object(systemd, unitPath(unit)).CallWithContext(ctx, propertiesIface+".Get", 0,
-		systemd+"."+kind, "ControlGroup").Store(&group)
+	err = conn.Object(dbusx.Systemd, dbusx.UnitPath(unit)).CallWithContext(ctx, dbusx.Properties+".Get", 0,
+		dbusx.Systemd+"."+kind, "ControlGroup").Store(&group)
 	if err != nil {
-		return "", fmt.Errorf("reading %s's cgroup: %w", unit, describe(err))
+		return "", fmt.Errorf("reading %s's cgroup: %w", unit, dbusx.Describe(err))
 	}
 	path, _ := group.Value().(string)
 	return path, nil
 }
 
 func (b *DBus) Watch(ctx context.Context, notify func(Change)) error {
-	conn, err := b.connect()
+	conn, err := dbusx.Connect(b.address)
 	if err != nil {
 		return err
 	}
@@ -217,16 +183,10 @@ func (b *DBus) Watch(ctx context.Context, notify func(Change)) error {
 	signals := make(chan *dbus.Signal, 64)
 	conn.Signal(signals)
 
-	bus := conn.BusObject()
-	for _, rule := range matches {
-		if err := bus.CallWithContext(ctx, "org.freedesktop.DBus.AddMatch", 0, rule).Err; err != nil {
-			return ended(ctx, fmt.Errorf("asking for systemd's signals: %w", describe(err)))
-		}
-	}
-	// Without this systemd sends no unit signals at all. Any user may ask,
-	// and it lasts as long as this connection does.
-	if err := conn.Object(systemd, managerPath).CallWithContext(ctx, manager+".Subscribe", 0).Err; err != nil {
-		return ended(ctx, fmt.Errorf("subscribing to systemd: %w", describe(err)))
+	// The match rules, then Manager.Subscribe: both last as long as this
+	// connection does.
+	if err := dbusx.Subscribe(ctx, conn, matches...); err != nil {
+		return ended(ctx, err)
 	}
 
 	// Mid-reload, systemd says things about units as it reloads them, and a
@@ -256,17 +216,6 @@ func ended(ctx context.Context, err error) error {
 	return err
 }
 
-// describe adds the error's name to a D-Bus error, whose own text is only its
-// message - "Unit x.service not loaded." says less without
-// org.freedesktop.systemd1.NoSuchUnit.
-func describe(err error) error {
-	var named dbus.Error
-	if errors.As(err, &named) {
-		return fmt.Errorf("%s: %w", named.Name, err)
-	}
-	return err
-}
-
 // toChange is the change a signal stands for, if it is one worth a pass: a
 // unit's ActiveState, or a reload finishing. Everything else a unit says
 // about itself - and it says a lot - cannot change what it forwards.
@@ -276,87 +225,31 @@ func toChange(signal *dbus.Signal) (Change, bool) {
 		// second is worth acting on: before it, the old configuration is live.
 		return Change{}, !starting
 	}
-	switch {
-
-	case signal.Name == propertiesIface+".PropertiesChanged" && strings.HasPrefix(string(signal.Path), unitPaths+"/"):
-		iface, _ := first[string](signal.Body, 0)
-		if iface != unitIface {
-			return Change{}, false
-		}
-		changed, _ := first[map[string]dbus.Variant](signal.Body, 1)
-		invalidated, _ := first[[]string](signal.Body, 2)
-		state, present := changed["ActiveState"]
-		if !present && !contains(invalidated, "ActiveState") {
-			return Change{}, false
-		}
-		value, _ := state.Value().(string)
-		return Change{Unit: unitName(string(signal.Path)[len(unitPaths)+1:]), State: value}, true
+	if signal.Name != dbusx.Properties+".PropertiesChanged" {
+		return Change{}, false
 	}
-	return Change{}, false
+	unit, ok := dbusx.UnitName(signal.Path)
+	if !ok {
+		return Change{}, false
+	}
+	if iface, _ := dbusx.Arg[string](signal.Body, 0); iface != dbusx.SystemdUnit {
+		return Change{}, false
+	}
+	changed, _ := dbusx.Arg[map[string]dbus.Variant](signal.Body, 1)
+	invalidated, _ := dbusx.Arg[[]string](signal.Body, 2)
+	state, present := changed["ActiveState"]
+	if !present && !slices.Contains(invalidated, "ActiveState") {
+		return Change{}, false
+	}
+	value, _ := state.Value().(string)
+	return Change{Unit: unit, State: value}, true
 }
 
 // reloadSignal is whether a signal is systemd's Reloading, and if so whether
 // the reload is starting rather than done.
 func reloadSignal(signal *dbus.Signal) (starting, ok bool) {
-	if signal.Name != manager+".Reloading" {
+	if signal.Name != dbusx.SystemdManager+".Reloading" {
 		return false, false
 	}
-	return first[bool](signal.Body, 0)
-}
-
-func first[T any](body []any, index int) (T, bool) {
-	var zero T
-	if index >= len(body) {
-		return zero, false
-	}
-	value, ok := body[index].(T)
-	return value, ok
-}
-
-func contains(values []string, want string) bool {
-	for _, value := range values {
-		if value == want {
-			return true
-		}
-	}
-	return false
-}
-
-// unitPath is a unit's object path, escaped as systemd escapes it: every
-// byte that is not a letter or digit, and a leading digit, becomes `_` and
-// two hex digits.
-func unitPath(name string) dbus.ObjectPath {
-	var escaped strings.Builder
-	for i := 0; i < len(name); i++ {
-		c := name[i]
-		if c >= 'A' && c <= 'Z' || c >= 'a' && c <= 'z' || i > 0 && c >= '0' && c <= '9' {
-			escaped.WriteByte(c)
-		} else {
-			fmt.Fprintf(&escaped, "_%02x", c)
-		}
-	}
-	return dbus.ObjectPath(unitPaths + "/" + escaped.String())
-}
-
-// unitName is the reverse of unitPath, for the last element of the path.
-func unitName(escaped string) string {
-	var name []byte
-	for i := 0; i < len(escaped); i++ {
-		if escaped[i] == '_' && i+2 < len(escaped) && hex(escaped[i+1]) && hex(escaped[i+2]) {
-			name = append(name, unhex(escaped[i+1])<<4|unhex(escaped[i+2]))
-			i += 2
-			continue
-		}
-		name = append(name, escaped[i])
-	}
-	return string(name)
-}
-
-func hex(c byte) bool { return c >= '0' && c <= '9' || c >= 'a' && c <= 'f' }
-
-func unhex(c byte) byte {
-	if c <= '9' {
-		return c - '0'
-	}
-	return c - 'a' + 10
+	return dbusx.Arg[bool](signal.Body, 0)
 }

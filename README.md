@@ -182,10 +182,12 @@ of which are in v2, and to [@jhenkens](https://github.com/jhenkens), whose
 
 ## Development
 
-Portical is Go, and the standard library apart from two modules:
+Portical is Go, and the standard library apart from
 [godbus](https://github.com/godbus/dbus) for the systemd source's system bus,
 and the author's own [gokit](https://github.com/danielbodart/gokit) -
-itself standard library only - for httpx, clock and sockdiag.
+itself standard library only - for httpx, clock and sockdiag, along with its
+separate `dbusx` module, over godbus, for the D-Bus plumbing every systemd
+client needs and the fake bus the D-Bus tests talk to.
 
 ```shell
 mise install       # installs the pinned Go

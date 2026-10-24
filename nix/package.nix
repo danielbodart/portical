@@ -15,10 +15,10 @@ buildGo127Module {
   pname = "portical";
   inherit version src;
 
-  # godbus, gokit and the golang.org/x/sys godbus needs, as `go mod vendor`
-  # lays them out. A go.sum change needs it recomputed: build once with
+  # godbus, gokit, gokit/dbusx and the golang.org/x/sys godbus needs, as
+  # `go mod vendor` lays them out. A go.sum change needs it recomputed: build once with
   # lib.fakeHash and take the hash Nix reports.
-  vendorHash = "sha256-oFrO+4NkrHEqy3FsgiH1BVIsGfv1YV/3+a/xrCJj70g=";
+  vendorHash = "sha256-Do3ZJPpbEpK6ZGljYNaGGKNlW3ylVhJT07gS5M4Knn8=";
 
   env.CGO_ENABLED = 0;
   ldflags = [
