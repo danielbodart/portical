@@ -1,5 +1,5 @@
-github.com/danielbodart/gokit v0.2.0 h1:xfu7H7oMG38TEyFcUpG4utBCm8n6FjStdOCy0O7sQd4=
-github.com/danielbodart/gokit v0.2.0/go.mod h1:2uVDeBiqXMUS1PXKXDTuyxta9nZE5fGR8cDtpXyRugM=
+github.com/danielbodart/gokit v0.3.0 h1:qO6NbQb4e1gT3eTGpX8y+39oxq+y+6fwKFPjLgvrWfQ=
+github.com/danielbodart/gokit v0.3.0/go.mod h1:2uVDeBiqXMUS1PXKXDTuyxta9nZE5fGR8cDtpXyRugM=
 github.com/danielbodart/gokit/dbusx v0.1.0 h1:inuZjSHzVHbj4C18N1j+3nceSEG+wcOMkGtlsEhH+Z4=
 github.com/danielbodart/gokit/dbusx v0.1.0/go.mod h1:IKsNLosCeFE6RxBVPIkQCTYWmgvokMAh2exZIfSvNvo=
 github.com/godbus/dbus/v5 v5.2.4 h1:F2gUCy++NMIxGmo9J+z5le/+ZC8W1OgeR51P4i9ZB/U=

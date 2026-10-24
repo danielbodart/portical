@@ -12,6 +12,7 @@ import (
 
 	"github.com/danielbodart/gokit/clock"
 	"github.com/danielbodart/gokit/httpx"
+	"github.com/danielbodart/gokit/logx/logtest"
 	"github.com/danielbodart/portical/internal/daemon"
 	"github.com/danielbodart/portical/internal/fakes"
 	"github.com/danielbodart/portical/internal/upnp"
@@ -210,7 +211,7 @@ func newSecureMode(t *testing.T, secure bool) *secureMode {
 		Source:      NewSource(client, Options{HostAddress: fakes.HostAddress}),
 		Gateway:     gateway,
 		Options:     options,
-		Log:         (&fakes.Log{}).Line,
+		Log:         &logtest.Logger{},
 		Clock:       clock.NewStopped(time.Date(2026, 10, 23, 12, 0, 0, 0, time.UTC)),
 		AsContainer: AsContainer(client, gateway, DefaultHelperImage),
 	})

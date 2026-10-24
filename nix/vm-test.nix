@@ -129,14 +129,11 @@ pkgs.testers.runNixOSTest {
     # event - an hour here. So the first pass is made to come after it.
     host.wait_for_open_port(8080)
     host.wait_for_open_port(9090)
-    host.systemctl("restart portical.service")
     # Subscribed only once the first pass is done: a unit that stops before
-    # then is not seen until the next interval.
-    host.wait_until_succeeds(
-        "journalctl -u portical.service "
-        "_SYSTEMD_INVOCATION_ID=$(systemctl show -p InvocationID --value portical.service) "
-        "| grep 'Watching for changes'"
-    )
+    # then is not seen until the next interval. The unit is Type=notify and
+    # Portical says READY=1 only then, so the restart itself returns once it
+    # is watching - and fails if it never gets there.
+    host.succeed("systemctl restart portical.service")
 
     with subtest("forwards an explicit term and a published port"):
         wait_for_mapping(8080)
@@ -164,6 +161,8 @@ pkgs.testers.runNixOSTest {
 
     with subtest("runs unprivileged, and says nothing went wrong"):
         host.succeed("test $(stat -c %u /proc/$(systemctl show -p MainPID --value portical.service)) -ne 0")
+        # The STATUS= Portical leaves after each pass, beside the unit.
+        host.succeed("systemctl show -p StatusText --value portical.service | grep -Ex '[0-9]+ forwards?'")
         journal = host.succeed(
             "journalctl -u portical.service "
             "_SYSTEMD_INVOCATION_ID=$(systemctl show -p InvocationID --value portical.service)"

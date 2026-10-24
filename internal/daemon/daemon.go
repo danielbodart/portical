@@ -19,15 +19,13 @@ import (
 	"time"
 
 	"github.com/danielbodart/gokit/clock"
+	"github.com/danielbodart/gokit/logx"
+	sd "github.com/danielbodart/gokit/systemd"
 	"github.com/danielbodart/portical/internal/model"
 	"github.com/danielbodart/portical/internal/reconcile"
 	"github.com/danielbodart/portical/internal/source"
 	"github.com/danielbodart/portical/internal/upnp"
 )
-
-// Log is where the daemon says what it is doing, one line at a time, without
-// a trailing newline. The daemon never calls it from two goroutines at once.
-type Log func(line string)
 
 // Options shape the daemon.
 type Options struct {
@@ -69,7 +67,14 @@ type Deps struct {
 	Source  source.Source
 	Gateway upnp.Gateway
 	Options Options
-	Log     Log
+	// Where the daemon says what it is doing: a rule the gateway refused and
+	// a pass that failed are its Errors, everything else - warnings about a
+	// label included - its Logs. Nothing when nil.
+	Log logx.Logger
+	// Tells whoever started the daemon how it is doing, as sd_notify states:
+	// Ready once Run has done its first pass and is watching, and a Status
+	// after any pass that changes it. Nothing when nil.
+	Notify func(states ...string) error
 	// Time, for the interval and the reconnect backoff. The system clock
 	// when nil.
 	Clock clock.Clock
@@ -85,7 +90,8 @@ type Daemon struct {
 	source      source.Source
 	gateway     upnp.Gateway
 	options     Options
-	log         Log
+	log         logx.Logger
+	notify      func(states ...string) error
 	clock       clock.Clock
 	asContainer func(owner string) upnp.Gateway
 
@@ -99,7 +105,13 @@ type Daemon struct {
 	// address.
 	written     map[string]bool
 	lastSummary string
+	lastStatus  string
+	// What the pass in flight has done, for its status.
+	tally tally
 }
+
+// tally is what one pass did, for the status it leaves behind.
+type tally struct{ forwarded, conflicts, failed int }
 
 // New is a daemon over deps.
 func New(deps Deps) *Daemon {
@@ -107,22 +119,17 @@ func New(deps Deps) *Daemon {
 		deps.Clock = clock.System{}
 	}
 	if deps.Log == nil {
-		deps.Log = func(string) {}
+		deps.Log = logx.Discard
 	}
-	// Passes and the event stream both speak, on different goroutines, so
-	// their lines are taken one at a time here rather than every Log having
-	// to be safe for it.
-	var speaking sync.Mutex
-	log := func(line string) {
-		speaking.Lock()
-		defer speaking.Unlock()
-		deps.Log(line)
+	if deps.Notify == nil {
+		deps.Notify = func(...string) error { return nil }
 	}
 	return &Daemon{
 		source:      deps.Source,
 		gateway:     deps.Gateway,
 		options:     deps.Options,
-		log:         log,
+		log:         deps.Log,
+		notify:      deps.Notify,
 		clock:       deps.Clock,
 		asContainer: deps.AsContainer,
 		written:     map[string]bool{},
@@ -138,13 +145,14 @@ func New(deps Deps) *Daemon {
 func (d *Daemon) Once(ctx context.Context) ([]reconcile.Action, error) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
+	d.tally = tally{}
 
 	desired, err := d.source.Desired(ctx)
 	if err != nil {
 		return nil, err
 	}
 	for _, warning := range desired.Warnings {
-		d.log("Warning: " + warning)
+		d.log.Log("Warning: " + warning)
 	}
 
 	mappings, err := d.gateway.Mappings(ctx)
@@ -160,7 +168,7 @@ func (d *Daemon) Once(ctx context.Context) ([]reconcile.Action, error) {
 	// Reported only when it changes, so a daemon reconciling every 15 seconds
 	// says something the first time and then stays quiet until it has news.
 	if summary := summarise(actions); summary != d.lastSummary {
-		d.log(summary)
+		d.log.Log(summary)
 		d.lastSummary = summary
 	}
 	return actions, nil
@@ -175,7 +183,7 @@ func (d *Daemon) Cleanup(ctx context.Context) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
-	d.log("Removing Portical's mappings before exit...")
+	d.log.Log("Removing Portical's mappings before exit...")
 	mappings, err := d.gateway.Mappings(ctx)
 	if err != nil {
 		return err
@@ -211,17 +219,19 @@ func (d *Daemon) reconcileOptions(forwards []model.DesiredForward) reconcile.Opt
 func (d *Daemon) apply(ctx context.Context, action reconcile.Action) {
 	switch action.Kind {
 	case reconcile.Keep:
+		d.tally.forwarded++
 
 	case reconcile.Conflict:
-		d.log(fmt.Sprintf("Conflict: %s wants %s but it is %s. Use --steal to take it over.",
+		d.tally.conflicts++
+		d.log.Log(fmt.Sprintf("Conflict: %s wants %s but it is %s. Use --steal to take it over.",
 			action.Forward.Owner, action.Forward.Rule, strings.Replace(action.Reason, "already forwarded by something else ", "", 1)))
 
 	case reconcile.Orphan:
-		d.log(fmt.Sprintf("Leaving %s alone - %s. It will be reclaimed if that container returns, or "+
+		d.log.Log(fmt.Sprintf("Leaving %s alone - %s. It will be reclaimed if that container returns, or "+
 			"expire on its own if the gateway set a lease.", action.Mapping.Identity(), action.Reason))
 
 	case reconcile.Remove:
-		d.log(fmt.Sprintf("Removing %s - %s", action.Mapping.Identity(), action.Reason))
+		d.log.Log(fmt.Sprintf("Removing %s - %s", action.Mapping.Identity(), action.Reason))
 		if d.options.DryRun {
 			return
 		}
@@ -232,15 +242,21 @@ func (d *Daemon) apply(ctx context.Context, action reconcile.Action) {
 	case reconcile.Add, reconcile.Renew, reconcile.Replace:
 		forward := action.Forward
 		verb := map[reconcile.Kind]string{reconcile.Add: "Adding", reconcile.Renew: "Renewing", reconcile.Replace: "Replacing"}[action.Kind]
-		d.log(fmt.Sprintf("%s %s for %s - %s", verb, forward.Rule, forward.Owner, action.Reason))
+		d.log.Log(fmt.Sprintf("%s %s for %s - %s", verb, forward.Rule, forward.Owner, action.Reason))
 		if d.options.DryRun {
+			// A lease left to run down is still forwarding, for now.
+			if action.Kind == reconcile.Renew {
+				d.tally.forwarded++
+			}
 			return
 		}
 		var hint func(error) string
 		if forward.Target.Kind == model.TargetContainer {
 			hint = relayHint
 		}
-		d.attempt(func() error { return d.write(ctx, action) }, hint)
+		if d.attempt(func() error { return d.write(ctx, action) }, hint) {
+			d.tally.forwarded++
+		}
 	}
 }
 
@@ -316,19 +332,24 @@ func (d *Daemon) gatewayFor(forward model.DesiredForward) upnp.Gateway {
 // One rule the router will not accept must not stop the other rules being
 // applied, and must not take the daemon down. v1 exited the whole process on
 // any upnpc failure, which is why a single stale mapping could stop every
-// forward on the host.
-func (d *Daemon) attempt(work func() error, hint func(error) string) {
+// forward on the host. Whether the work was done.
+//
+// The failure and its explanation are both Errors, so the explanation is
+// never parted from what it explains.
+func (d *Daemon) attempt(work func() error, hint func(error) string) bool {
 	err := work()
 	if err == nil {
-		return
+		return true
 	}
-	d.log("  FAILED: " + err.Error())
+	d.tally.failed++
+	d.log.Error("  FAILED: " + err.Error())
 	if hint == nil {
-		return
+		return false
 	}
 	if explanation := hint(err); explanation != "" {
-		d.log("  " + explanation)
+		d.log.Error("  " + explanation)
 	}
+	return false
 }
 
 // relayHint explains a failure that happened while asking as the container.
@@ -369,11 +390,13 @@ func (d *Daemon) Run(ctx context.Context) {
 	// still bounded by the client's own timeout.
 	passes := context.WithoutCancel(ctx)
 	pass := func() {
-		if _, err := d.Once(passes); err != nil {
+		_, err := d.Once(passes)
+		if err != nil {
 			// A pass that fails is not fatal: Docker may be restarting, or the
 			// router may be briefly unreachable. The next one tries again.
-			d.log("Error: " + err.Error())
+			d.log.Error("Error: " + err.Error())
 		}
+		d.report(err)
 	}
 
 	pass()
@@ -408,8 +431,12 @@ func (d *Daemon) Run(ctx context.Context) {
 		}
 	})
 
-	d.log(fmt.Sprintf("Watching for changes, reconciling every %ss...",
+	d.log.Log(fmt.Sprintf("Watching for changes, reconciling every %ss...",
 		strconv.FormatFloat(d.options.Interval.Seconds(), 'f', -1, 64)))
+	// Ready once the first pass is done, so under Type=notify a unit ordered
+	// after Portical - and `systemctl restart` itself - waits for the
+	// forwards to be in place rather than for the process to exist.
+	d.tell(sd.Ready)
 
 	// Reopened rather than given up on when the stream ends. Losing it is not
 	// fatal: the interval keeps reconciling, so the worst case is degrading to
@@ -427,7 +454,7 @@ func (d *Daemon) Run(ctx context.Context) {
 	for ctx.Err() == nil {
 		d.source.Events(ctx, func(event source.Event) {
 			if event.Description != "" {
-				d.log(event.Description)
+				d.log.Log(event.Description)
 			}
 			request()
 		})
@@ -438,6 +465,52 @@ func (d *Daemon) Run(ctx context.Context) {
 		// does not spin.
 		clock.Sleep(ctx, d.clock, d.options.ReconnectBackoff)
 	}
+}
+
+// report tells systemd how the pass that just finished left things - see
+// status - when that has changed, so a daemon passing every 15 seconds does
+// not say the same thing every 15 seconds.
+func (d *Daemon) report(failed error) {
+	d.mu.Lock()
+	text := status(d.tally, failed)
+	changed := text != d.lastStatus
+	d.lastStatus = text
+	d.mu.Unlock()
+	if changed {
+		d.tell(sd.Status(text))
+	}
+}
+
+// tell sends states to whoever started the daemon. Failing to is worth
+// saying - under Type=notify a lost Ready fails the start - but not worth
+// stopping for.
+func (d *Daemon) tell(states ...string) {
+	if err := d.notify(states...); err != nil {
+		d.log.Error("Error: " + err.Error())
+	}
+}
+
+// status is the one line `systemctl status` shows beside the unit: how many
+// forwards are in place after the last pass, and what is wrong, if anything.
+func status(t tally, failed error) string {
+	if failed != nil {
+		return "Error: " + failed.Error()
+	}
+	text := plural(t.forwarded, "forward")
+	if t.conflicts > 0 {
+		text += fmt.Sprintf(", %d in conflict", t.conflicts)
+	}
+	if t.failed > 0 {
+		text += fmt.Sprintf(", %d failed", t.failed)
+	}
+	return text
+}
+
+func plural(n int, noun string) string {
+	if n == 1 {
+		return "1 " + noun
+	}
+	return fmt.Sprintf("%d %ss", n, noun)
 }
 
 // summarise is one line saying what the pass did.

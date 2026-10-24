@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"slices"
 	"strings"
 	"sync"
 
@@ -50,6 +51,7 @@ type fakeDocker struct {
 	created    []string // the image of each helper, in order
 	streams    int
 	requests   []string
+	agents     []string
 }
 
 type helper struct {
@@ -79,8 +81,21 @@ func (f *fakeDocker) transport() func(string) http.RoundTripper {
 		f.mu.Lock()
 		f.requests = append(f.requests, "socket "+socket)
 		f.mu.Unlock()
-		return httpx.StreamingHandlerTransport(f)
+		inner := httpx.StreamingHandlerTransport(f)
+		return httpx.RoundTripperFunc(func(r *http.Request) (*http.Response, error) {
+			f.mu.Lock()
+			f.agents = append(f.agents, r.UserAgent())
+			f.mu.Unlock()
+			return inner.RoundTrip(r)
+		})
 	}
+}
+
+// userAgents is what every request to Docker called itself.
+func (f *fakeDocker) userAgents() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return slices.Compact(slices.Clone(f.agents))
 }
 
 func (f *fakeDocker) seen() []string {

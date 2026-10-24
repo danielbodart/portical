@@ -8,6 +8,7 @@ import (
 	"sync"
 
 	"github.com/danielbodart/gokit/dbusx"
+	"github.com/danielbodart/gokit/environ"
 	"github.com/godbus/dbus/v5"
 )
 
@@ -40,7 +41,7 @@ var matches = []string{
 // SystemBus is systemd over the system bus at DBUS_SYSTEM_BUS_ADDRESS, or the
 // standard socket - as dbusx.SystemBusAddress finds it, unix: addresses only.
 // Nothing is connected until the first call.
-func SystemBus(env map[string]string) (Bus, error) {
+func SystemBus(env environ.Env) (Bus, error) {
 	address, err := dbusx.SystemBusAddress(env)
 	if err != nil {
 		return nil, err

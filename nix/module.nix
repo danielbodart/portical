@@ -248,6 +248,15 @@ in
       after = [ "network-online.target" ] ++ optional (builtins.elem "docker" cfg.sources) "docker.service";
 
       serviceConfig = {
+        # Portical says READY=1 once its first pass is done and it is
+        # watching, so units ordered after it, and `systemctl restart`, wait
+        # for the forwards to be in place. The main process sends it, so the
+        # default NotifyAccess=main is enough.
+        Type = "notify";
+        # The first pass can outlast systemd's default 90s: each forward to a
+        # macvlan container goes through a helper container, which may need
+        # pulling first.
+        TimeoutStartSec = "5min";
         # Escaped for systemd rather than a shell: it expands % specifiers
         # and $VARIABLES even inside quotes.
         ExecStart = utils.escapeSystemdExecArgs (

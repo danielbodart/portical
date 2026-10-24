@@ -26,6 +26,12 @@ Wants=network-online.target
 After=network-online.target
 
 [Service]
+# Ready once the first pass is done and Portical is watching, so units ordered
+# after it, and `systemctl restart`, wait for the forwards to be in place.
+Type=notify
+# The first pass can outlast systemd's default 90s: each forward to a macvlan
+# container goes through a helper container, which may need pulling first.
+TimeoutStartSec=5min
 Environment=PORTICAL_SOURCES=systemd
 ExecStart=/usr/local/bin/portical run
 Restart=on-failure

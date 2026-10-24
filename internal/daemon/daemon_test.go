@@ -11,7 +11,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/danielbodart/gokit/await"
 	"github.com/danielbodart/gokit/httpx"
+	sd "github.com/danielbodart/gokit/systemd"
 	"github.com/danielbodart/portical/internal/fakes"
 	"github.com/danielbodart/portical/internal/model"
 	"github.com/danielbodart/portical/internal/source"
@@ -260,7 +262,7 @@ func TestOneRuleTheRouterRefusesDoesNotStopTheOthers(t *testing.T) {
 	if got := h.ports(); !reflect.DeepEqual(got, []int{9999}) {
 		t.Errorf("got %v", got)
 	}
-	if !h.log.Contains("718") {
+	if !h.log.ErrorContains("718") {
 		t.Errorf("log:\n%s", h.log.Text())
 	}
 }
@@ -299,7 +301,9 @@ func TestASourcesWarningsAreLogged(t *testing.T) {
 	h := newHarness(t, fakes.Quirks{})
 	h.source.Want(source.Desired{Warnings: []string{"nginx: ignoring unrecognised rule '8O8O'"}})
 	h.once(t)
-	if !slices.Contains(h.log.Lines(), "Warning: nginx: ignoring unrecognised rule '8O8O'") {
+	// Said as commentary, not as an error: the pass went ahead, and what is
+	// wrong is a label for whoever wrote it to read, not a fault of Portical's.
+	if !slices.Contains(h.log.Logs(), "Warning: nginx: ignoring unrecognised rule '8O8O'") {
 		t.Errorf("log:\n%s", h.log.Text())
 	}
 }
@@ -308,7 +312,7 @@ func TestAForwardWithNoAddressAndNoHostAddressSaysWhatToSet(t *testing.T) {
 	h := newHarness(t, fakes.Quirks{}, func(o *Options) { o.HostAddress = "" })
 	h.source.Want(source.Desired{Forwards: []model.DesiredForward{{Rule: model.Rule{ExternalPort: 80, InternalPort: 80, Protocol: model.TCP}, Owner: "nginx"}}})
 	h.once(t)
-	if !h.log.Contains("  FAILED: cannot tell which address to forward to - set --root") {
+	if !h.log.ErrorContains("  FAILED: cannot tell which address to forward to - set --root") {
 		t.Errorf("log:\n%s", h.log.Text())
 	}
 }
@@ -537,7 +541,7 @@ func TestSecureModeExplainsWhatToCheckWhenThereIsNoWayToAskAsTheContainer(t *tes
 
 	h.once(t)
 
-	if !h.log.Contains("718") || !h.log.Contains("real conflict") {
+	if !h.log.ErrorContains("718") || !h.log.ErrorContains("real conflict") {
 		t.Errorf("log:\n%s", h.log.Text())
 	}
 }
@@ -587,7 +591,7 @@ func TestAFailureAskingAsTheContainerSaysWhatToCheck(t *testing.T) {
 
 	h.once(t)
 
-	if !h.log.Contains("no such image") || !h.log.Contains("--helper-image") {
+	if !h.log.ErrorContains("no such image") || !h.log.ErrorContains("--helper-image") {
 		t.Errorf("log:\n%s", h.log.Text())
 	}
 }
@@ -673,11 +677,11 @@ func TestRunReconcilesOnAnEventWithoutWaitingForTheInterval(t *testing.T) {
 	stop := h.run(t)
 
 	h.start(nginx())
-	fakes.Await(t, "the forward", func() bool { return len(h.router.Mappings()) == 1 })
+	await.Until(t, "the forward", func() bool { return len(h.router.Mappings()) == 1 })
 
 	h.running()
 	h.source.Emit(source.Event{Description: "Container nginx die"})
-	fakes.Await(t, "the forward to go", func() bool { return len(h.router.Mappings()) == 0 })
+	await.Until(t, "the forward to go", func() bool { return len(h.router.Mappings()) == 0 })
 
 	stop()
 	if !h.log.Contains("Container nginx start") || !h.log.Contains("Container nginx die") {
@@ -688,7 +692,7 @@ func TestRunReconcilesOnAnEventWithoutWaitingForTheInterval(t *testing.T) {
 func TestRunReconcilesEveryInterval(t *testing.T) {
 	h := newHarness(t, fakes.Quirks{})
 	h.run(t)
-	fakes.Await(t, "the first pass", func() bool { return h.source.Calls() == 1 })
+	await.Until(t, "the first pass", func() bool { return h.source.Calls() == 1 })
 
 	// Wanted without saying so, so only the interval can notice.
 	h.running(nginx())
@@ -697,13 +701,13 @@ func TestRunReconcilesEveryInterval(t *testing.T) {
 	}
 	h.clock.Advance(Defaults.Interval)
 
-	fakes.Await(t, "the interval pass", func() bool { return len(h.router.Mappings()) == 1 })
+	await.Until(t, "the interval pass", func() bool { return len(h.router.Mappings()) == 1 })
 }
 
 func TestRunSaysItIsWatchingAndHowOften(t *testing.T) {
 	h := newHarness(t, fakes.Quirks{})
 	stop := h.run(t)
-	fakes.Await(t, "the stream", func() bool { return h.source.Open() == 1 })
+	await.Until(t, "the stream", func() bool { return h.source.Open() == 1 })
 	stop()
 	if !slices.Contains(h.log.Lines(), "Watching for changes, reconciling every 15s...") {
 		t.Errorf("log:\n%s", h.log.Text())
@@ -724,18 +728,18 @@ func TestRunCollapsesABurstOfEventsIntoOnePassBehindTheOneRunning(t *testing.T) 
 	stop := h.run(t)
 
 	gate <- struct{}{} // the first pass
-	fakes.Await(t, "the stream", func() bool { return h.source.Open() == 1 })
+	await.Until(t, "the stream", func() bool { return h.source.Open() == 1 })
 
 	h.source.Emit(source.Event{})
-	fakes.Await(t, "the event's pass", func() bool { return h.source.Calls() == 2 })
+	await.Until(t, "the event's pass", func() bool { return h.source.Calls() == 2 })
 	for range 30 {
 		h.source.Emit(source.Event{Description: "burst"})
 	}
 	// Every one of them seen while the event's pass is still running.
-	fakes.Await(t, "the burst", func() bool { return strings.Count(h.log.Text(), "burst") == 30 })
+	await.Until(t, "the burst", func() bool { return strings.Count(h.log.Text(), "burst") == 30 })
 	gate <- struct{}{} // the event's pass
 
-	fakes.Await(t, "the pass queued behind it", func() bool { return h.source.Calls() == 3 })
+	await.Until(t, "the pass queued behind it", func() bool { return h.source.Calls() == 3 })
 	close(gate) // that one, and any that should not have been queued
 	stop()
 
@@ -748,11 +752,11 @@ func TestRunCollapsesABurstOfEventsIntoOnePassBehindTheOneRunning(t *testing.T) 
 func TestRunKeepsGoingAfterAPassFails(t *testing.T) {
 	h := newHarness(t, fakes.Quirks{})
 	h.run(t)
-	fakes.Await(t, "the stream", func() bool { return h.source.Open() == 1 })
+	await.Until(t, "the stream", func() bool { return h.source.Open() == 1 })
 
 	h.source.FailWith(errors.New("Cannot connect to the Docker daemon"))
 	h.start(nginx())
-	fakes.Await(t, "the failure", func() bool { return h.log.Contains("Error: Cannot connect to the Docker daemon") })
+	await.Until(t, "the failure", func() bool { return h.log.ErrorContains("Error: Cannot connect to the Docker daemon") })
 
 	h.source.FailWith(nil)
 	h.start(labelled("plex", "32400/tcp"), nginx())
@@ -760,13 +764,13 @@ func TestRunKeepsGoingAfterAPassFails(t *testing.T) {
 	// Both containers, including the one whose start event was lost to the
 	// outage - every pass reconciles from scratch rather than replaying
 	// events, so nothing has to be remembered across the failure.
-	fakes.Await(t, "both forwards", func() bool { return reflect.DeepEqual(h.ports(), []int{9999, 32400}) })
+	await.Until(t, "both forwards", func() bool { return reflect.DeepEqual(h.ports(), []int{9999, 32400}) })
 }
 
 func TestRunReopensAStreamThatDropsInsteadOfExiting(t *testing.T) {
 	h := newHarness(t, fakes.Quirks{})
 	h.run(t)
-	fakes.Await(t, "the stream", func() bool { return h.source.Open() == 1 })
+	await.Until(t, "the stream", func() bool { return h.source.Open() == 1 })
 
 	// The stream drops the way the Docker socket's idle timeout drops it on a
 	// quiet host - failing, without the daemon being stopped.
@@ -785,7 +789,7 @@ func TestRunReopensAStreamThatDropsInsteadOfExiting(t *testing.T) {
 	}
 	h.clock.Advance(Defaults.ReconnectBackoff)
 
-	fakes.Await(t, "the forward", func() bool { return len(h.router.Mappings()) == 1 })
+	await.Until(t, "the forward", func() bool { return len(h.router.Mappings()) == 1 })
 	if h.source.Opened() != 2 {
 		t.Errorf("opened %d streams", h.source.Opened())
 	}
@@ -794,7 +798,7 @@ func TestRunReopensAStreamThatDropsInsteadOfExiting(t *testing.T) {
 func TestRunReopensAStreamThatEndsCleanly(t *testing.T) {
 	h := newHarness(t, fakes.Quirks{})
 	h.run(t)
-	fakes.Await(t, "the stream", func() bool { return h.source.Open() == 1 })
+	await.Until(t, "the stream", func() bool { return h.source.Open() == 1 })
 
 	h.source.Drop(nil)
 	if err := h.clock.BlockUntil(ctx, 2); err != nil {
@@ -802,7 +806,7 @@ func TestRunReopensAStreamThatEndsCleanly(t *testing.T) {
 	}
 	h.clock.Advance(Defaults.ReconnectBackoff)
 
-	fakes.Await(t, "the stream to reopen", func() bool { return h.source.Opened() == 2 && h.source.Open() == 1 })
+	await.Until(t, "the stream to reopen", func() bool { return h.source.Opened() == 2 && h.source.Open() == 1 })
 }
 
 // Issue #10, reported as a memory leak: each reconnect in the TypeScript
@@ -813,7 +817,7 @@ func TestRunLeavesNothingBehindOnEveryReconnect(t *testing.T) {
 	// An hour, so twenty backoffs never add up to an interval pass.
 	h := newHarness(t, fakes.Quirks{}, func(o *Options) { o.Interval = time.Hour })
 	h.run(t)
-	fakes.Await(t, "the stream", func() bool { return h.source.Open() == 1 })
+	await.Until(t, "the stream", func() bool { return h.source.Open() == 1 })
 	settled := runtime.NumGoroutine()
 
 	for i := range 20 {
@@ -822,10 +826,10 @@ func TestRunLeavesNothingBehindOnEveryReconnect(t *testing.T) {
 			t.Fatal(err)
 		}
 		h.clock.Advance(Defaults.ReconnectBackoff)
-		fakes.Await(t, "the stream to reopen", func() bool { return h.source.Opened() == i+2 && h.source.Open() == 1 })
+		await.Until(t, "the stream to reopen", func() bool { return h.source.Opened() == i+2 && h.source.Open() == 1 })
 	}
 
-	fakes.Await(t, "the goroutines to settle", func() bool { return runtime.NumGoroutine() <= settled })
+	await.Until(t, "the goroutines to settle", func() bool { return runtime.NumGoroutine() <= settled })
 	if h.clock.Waiting() != 1 {
 		t.Errorf("%d waits outstanding, want only the interval's", h.clock.Waiting())
 	}
@@ -834,7 +838,7 @@ func TestRunLeavesNothingBehindOnEveryReconnect(t *testing.T) {
 func TestRunStopsPromptlyDuringTheBackoff(t *testing.T) {
 	h := newHarness(t, fakes.Quirks{})
 	stop := h.run(t)
-	fakes.Await(t, "the stream", func() bool { return h.source.Open() == 1 })
+	await.Until(t, "the stream", func() bool { return h.source.Open() == 1 })
 	h.source.Drop(errors.New("The operation timed out"))
 	if err := h.clock.BlockUntil(ctx, 2); err != nil {
 		t.Fatal(err)
@@ -850,7 +854,7 @@ func TestRunStopsPromptlyDuringTheBackoff(t *testing.T) {
 func TestRunFinishesThePassInFlightBeforeReturning(t *testing.T) {
 	h := newHarness(t, fakes.Quirks{})
 	cancel, done := h.launch()
-	fakes.Await(t, "the stream", func() bool { return h.source.Open() == 1 })
+	await.Until(t, "the stream", func() bool { return h.source.Open() == 1 })
 
 	entered, release := make(chan struct{}), make(chan struct{})
 	h.source.Blocking(func(context.Context) error {
@@ -871,5 +875,79 @@ func TestRunFinishesThePassInFlightBeforeReturning(t *testing.T) {
 	<-done
 	if len(h.router.Mappings()) != 1 {
 		t.Errorf("the pass was abandoned: %+v", h.router.Mappings())
+	}
+}
+
+// Under Type=notify, systemd holds a start - and `systemctl restart` - until
+// Ready, so it is sent once the first pass has put the forwards in place.
+func TestRunSaysItIsReadyOnceTheFirstPassIsDone(t *testing.T) {
+	h := newHarness(t, fakes.Quirks{})
+	h.running(nginx())
+	stop := h.run(t)
+	await.Until(t, "ready", func() bool { return slices.Contains(h.notified(), sd.Ready) })
+	stop()
+
+	if got, want := h.notified(), []string{sd.Status("1 forward"), sd.Ready}; !slices.Equal(got, want) {
+		t.Errorf("notified %q, want %q", got, want)
+	}
+	if len(h.router.Mappings()) != 1 {
+		t.Errorf("ready before the forward was in place")
+	}
+}
+
+func TestRunsStatusIsUpdatedOnlyWhenItChanges(t *testing.T) {
+	h := newHarness(t, fakes.Quirks{})
+	h.run(t)
+	await.Until(t, "the stream", func() bool { return h.source.Open() == 1 })
+
+	h.start(nginx())
+	await.Until(t, "the forward", func() bool { return len(h.router.Mappings()) == 1 })
+	h.source.Emit(source.Event{})
+	await.Until(t, "the next pass", func() bool { return h.source.Calls() == 3 })
+	h.source.FailWith(errors.New("Cannot connect to the Docker daemon"))
+	h.source.Emit(source.Event{})
+	want := []string{sd.Status("0 forwards"), sd.Ready, sd.Status("1 forward"), sd.Status("Error: Cannot connect to the Docker daemon")}
+	await.Until(t, "the failure's status", func() bool { return len(h.notified()) == len(want) })
+
+	if got := h.notified(); !slices.Equal(got, want) {
+		t.Errorf("notified %q, want %q", got, want)
+	}
+}
+
+func TestRunsStatusCountsWhatIsInConflictAndWhatFailed(t *testing.T) {
+	h := newHarness(t, fakes.Quirks{SecureMode: true})
+	h.router.Given(model.Mapping{ExternalPort: 32400, Protocol: model.TCP, InternalClient: "192.168.1.9", InternalPort: 32400, Description: "plex"})
+	h.running(nginx(), labelled("jellyfin", "32400/tcp"), container{name: "direct", label: "80/tcp", macvlan: "192.168.1.40"})
+	stop := h.run(t)
+	await.Until(t, "ready", func() bool { return slices.Contains(h.notified(), sd.Ready) })
+	stop()
+
+	if want := sd.Status("1 forward, 1 in conflict, 1 failed"); h.notified()[0] != want {
+		t.Errorf("notified %q, want %q first", h.notified(), want)
+	}
+}
+
+func TestOnceTellsNoOne(t *testing.T) {
+	h := newHarness(t, fakes.Quirks{})
+	h.running(nginx())
+	h.once(t)
+	if got := h.notified(); len(got) != 0 {
+		t.Errorf("notified %q", got)
+	}
+}
+
+func TestAFailureToTellSystemdIsAnErrorButNotAStop(t *testing.T) {
+	h := newHarness(t, fakes.Quirks{})
+	h.daemon.notify = func(...string) error { return errors.New("sd_notify: connection refused") }
+	h.running(nginx())
+	stop := h.run(t)
+	await.Until(t, "the stream", func() bool { return h.source.Open() == 1 })
+	stop()
+
+	if !h.log.ErrorContains("Error: sd_notify: connection refused") {
+		t.Errorf("log:\n%s", h.log.Text())
+	}
+	if len(h.router.Mappings()) != 1 {
+		t.Errorf("got %+v", h.router.Mappings())
 	}
 }

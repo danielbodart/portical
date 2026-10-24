@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/danielbodart/gokit/environ"
 	"github.com/danielbodart/portical/internal/daemon"
 	"github.com/danielbodart/portical/internal/docker"
 	"github.com/danielbodart/portical/internal/systemd"
@@ -111,7 +112,7 @@ var legacyEntrypoint = regexp.MustCompile(`/(run|portical)$`)
 // Everything that can be checked without the network is checked here, so a
 // mistake in a unit file or a compose file fails at once with the usage,
 // rather than after a gateway search, or on the first pass an hour later.
-func Parse(args []string, env map[string]string) (Config, error) {
+func Parse(args []string, env environ.Env) (Config, error) {
 	config := Config{
 		Socket:       DefaultDockerSocket,
 		SystemdKey:   systemd.ForwardKey,

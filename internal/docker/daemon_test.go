@@ -7,7 +7,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/danielbodart/gokit/await"
 	"github.com/danielbodart/gokit/clock"
+	"github.com/danielbodart/gokit/logx/logtest"
 	"github.com/danielbodart/portical/internal/daemon"
 	"github.com/danielbodart/portical/internal/fakes"
 	"github.com/danielbodart/portical/internal/upnp"
@@ -22,7 +24,7 @@ import (
 type portical struct {
 	docker  *fakeDocker
 	router  *fakes.Gateway
-	log     *fakes.Log
+	log     *logtest.Logger
 	clock   *clock.Stopped
 	options daemon.Options
 	daemon  *daemon.Daemon
@@ -33,7 +35,7 @@ func newPortical(t *testing.T) *portical {
 	p := &portical{
 		docker: newFakeDocker(),
 		router: fakes.NewGateway(fakes.Quirks{}),
-		log:    &fakes.Log{},
+		log:    &logtest.Logger{},
 		clock:  clock.NewStopped(time.Date(2026, 10, 23, 12, 0, 0, 0, time.UTC)),
 	}
 	gateway, err := upnp.At(ctx, p.router.Client(), fakes.RootURL)
@@ -46,7 +48,7 @@ func newPortical(t *testing.T) *portical {
 		Source:  NewSource(p.docker.client(), Options{HostAddress: fakes.HostAddress}),
 		Gateway: gateway,
 		Options: p.options,
-		Log:     p.log.Line,
+		Log:     p.log,
 		Clock:   p.clock,
 	})
 	return p
@@ -67,9 +69,9 @@ func (p *portical) run(t *testing.T) {
 		<-done
 		// Docker sees the stream close a moment after Run has returned, as it
 		// would over a socket.
-		fakes.Await(t, "every event stream to close", func() bool { return p.docker.open() == 0 })
+		await.Until(t, "every event stream to close", func() bool { return p.docker.open() == 0 })
 	})
-	fakes.Await(t, "the event stream to open", func() bool { return p.docker.open() == 1 })
+	await.Until(t, "the event stream to open", func() bool { return p.docker.open() == 1 })
 }
 
 func (p *portical) ports() []int {
@@ -143,10 +145,10 @@ func TestRunReconcilesOnAContainerEventWithoutWaitingForTheInterval(t *testing.T
 	p.run(t)
 
 	p.docker.startContainer(nginx())
-	fakes.Await(t, "nginx's forward", func() bool { return len(p.router.Mappings()) == 1 })
+	await.Until(t, "nginx's forward", func() bool { return len(p.router.Mappings()) == 1 })
 
 	p.docker.stop("nginx")
-	fakes.Await(t, "nginx's forward to go", func() bool { return len(p.router.Mappings()) == 0 })
+	await.Until(t, "nginx's forward to go", func() bool { return len(p.router.Mappings()) == 0 })
 
 	if !p.log.Contains("Container nginx start") || !p.log.Contains("Container nginx die") {
 		t.Errorf("logged %s", p.log.Text())
@@ -159,7 +161,7 @@ func TestRunKeepsGoingAfterAPassFails(t *testing.T) {
 
 	p.docker.fail("Cannot connect to the Docker daemon")
 	p.docker.startContainer(nginx())
-	fakes.Await(t, "the failure to be reported", func() bool { return p.log.Contains("Cannot connect to the Docker daemon") })
+	await.Until(t, "the failure to be reported", func() bool { return p.log.Contains("Cannot connect to the Docker daemon") })
 
 	p.docker.fail("")
 	p.docker.startContainer(container("plex", forward("32400/tcp")))
@@ -167,7 +169,7 @@ func TestRunKeepsGoingAfterAPassFails(t *testing.T) {
 	// Both containers, including the one whose start event was lost to the
 	// outage - every pass reconciles from scratch rather than replaying
 	// events, so nothing has to be remembered across the failure.
-	fakes.Await(t, "both forwards", func() bool { return slices.Equal(p.ports(), []int{9999, 32400}) })
+	await.Until(t, "both forwards", func() bool { return slices.Equal(p.ports(), []int{9999, 32400}) })
 }
 
 func TestRunReconnectsWhenTheEventStreamDropsInsteadOfExiting(t *testing.T) {
@@ -187,7 +189,7 @@ func TestRunReconnectsWhenTheEventStreamDropsInsteadOfExiting(t *testing.T) {
 	p.docker.startContainer(nginx())
 	p.clock.Advance(p.options.ReconnectBackoff)
 
-	fakes.Await(t, "nginx's forward", func() bool { return len(p.router.Mappings()) == 1 })
+	await.Until(t, "nginx's forward", func() bool { return len(p.router.Mappings()) == 1 })
 	if opened := p.docker.everOpened(); opened != 2 {
 		t.Errorf("opened %d streams", opened)
 	}
@@ -205,6 +207,6 @@ func TestRunLeavesNothingOpenBehindAcrossReconnects(t *testing.T) {
 			t.Fatal(err)
 		}
 		p.clock.Advance(p.options.ReconnectBackoff)
-		fakes.Await(t, "the stream to reopen", func() bool { return p.docker.everOpened() == round+1 && p.docker.open() == 1 })
+		await.Until(t, "the stream to reopen", func() bool { return p.docker.everOpened() == round+1 && p.docker.open() == 1 })
 	}
 }

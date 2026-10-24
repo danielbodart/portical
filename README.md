@@ -245,7 +245,10 @@ tests written against those.
 ## Shutdown
 
 Portical stops cleanly on `SIGTERM` and `SIGINT`: it stops reconciling, finishes
-the pass it is in, and exits. Existing forwards are **left in place**, because a
+the pass it is in, and exits. Under systemd, where its unit is `Type=notify`, it
+says when it is ready - once the first pass is done and it is watching - and when
+it begins to stop; anywhere else, such as Docker, there is no one to tell and it
+says nothing. Existing forwards are **left in place**, because a
 Portical that is restarting should not take down the services it is about to
 forward again. Pass `--cleanup-on-exit` to remove them instead.
 

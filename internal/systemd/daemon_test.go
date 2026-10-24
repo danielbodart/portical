@@ -8,7 +8,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/danielbodart/gokit/await"
 	"github.com/danielbodart/gokit/clock"
+	"github.com/danielbodart/gokit/logx/logtest"
 	"github.com/danielbodart/portical/internal/daemon"
 	"github.com/danielbodart/portical/internal/fakes"
 	"github.com/danielbodart/portical/internal/model"
@@ -21,7 +23,7 @@ import (
 type portical struct {
 	*fixture
 	router *fakes.Gateway
-	log    *fakes.Log
+	log    *logtest.Logger
 	clock  *clock.Stopped
 	daemon *daemon.Daemon
 }
@@ -31,7 +33,7 @@ func newPortical(t *testing.T) *portical {
 	p := &portical{
 		fixture: newFixture(),
 		router:  fakes.NewGateway(fakes.Quirks{}),
-		log:     &fakes.Log{},
+		log:     &logtest.Logger{},
 		clock:   clock.NewStopped(time.Date(2026, 10, 23, 12, 0, 0, 0, time.UTC)),
 	}
 	gateway, err := upnp.At(ctx, p.router.Client(), fakes.RootURL)
@@ -40,7 +42,7 @@ func newPortical(t *testing.T) *portical {
 	}
 	options := daemon.Defaults
 	options.HostAddress = host
-	p.daemon = daemon.New(daemon.Deps{Source: p.source, Gateway: gateway, Options: options, Log: p.log.Line, Clock: p.clock})
+	p.daemon = daemon.New(daemon.Deps{Source: p.source, Gateway: gateway, Options: options, Log: p.log, Clock: p.clock})
 	p.files.Put("/etc/systemd/system/mc.service", "[Unit]\nX-Portical-Forward=25565/tcp\n")
 	return p
 }
@@ -117,7 +119,7 @@ func TestDaemonReactsToAUnitStartingWithoutWaitingForTheIntervalAndSurvivesTheBu
 		stop()
 		<-done
 	}()
-	fakes.Await(t, "the stream", func() bool { return p.systemd.Open() })
+	await.Until(t, "the stream", func() bool { return p.systemd.Open() })
 	assertEqual(t, p.ports(), nil)
 
 	p.systemd.DropStream(nil)
@@ -126,16 +128,16 @@ func TestDaemonReactsToAUnitStartingWithoutWaitingForTheIntervalAndSurvivesTheBu
 		t.Fatal(err)
 	}
 	p.clock.Advance(daemon.Defaults.ReconnectBackoff)
-	fakes.Await(t, "the stream to reopen", func() bool { return p.systemd.Watching() == 2 && p.systemd.Open() })
+	await.Until(t, "the stream to reopen", func() bool { return p.systemd.Watching() == 2 && p.systemd.Open() })
 
 	p.systemd.Start(unit("mc.service"))
-	fakes.Await(t, "the forward", func() bool { return reflect.DeepEqual(p.ports(), []int{25565}) })
+	await.Until(t, "the forward", func() bool { return reflect.DeepEqual(p.ports(), []int{25565}) })
 	// Not declared on the pass before it started, so not worth a line yet.
 	if p.log.Contains("Unit mc.service active") {
 		t.Error("logged a unit that declared nothing yet")
 	}
 
 	p.systemd.Stop("mc.service")
-	fakes.Await(t, "the forward to go", func() bool { return len(p.ports()) == 0 })
-	fakes.Await(t, "the line", func() bool { return slices.Contains(p.log.Lines(), "Unit mc.service inactive") })
+	await.Until(t, "the forward to go", func() bool { return len(p.ports()) == 0 })
+	await.Until(t, "the line", func() bool { return slices.Contains(p.log.Lines(), "Unit mc.service inactive") })
 }

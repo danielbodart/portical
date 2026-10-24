@@ -11,6 +11,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/danielbodart/gokit/await"
 	"github.com/danielbodart/gokit/httpx"
 	"github.com/danielbodart/portical/internal/fakes"
 	"github.com/danielbodart/portical/internal/source"
@@ -151,7 +152,7 @@ func listen(t *testing.T, ctx context.Context, docker *fakeDocker) *events {
 	t.Helper()
 	e := &events{got: make(chan Event, 16), ended: make(chan error, 1)}
 	go func() { e.ended <- docker.client().Events(ctx, ForwardLabel, func(event Event) { e.got <- event }) }()
-	fakes.Await(t, "the event stream to open", func() bool { return docker.open() == 1 })
+	await.Until(t, "the event stream to open", func() bool { return docker.open() == 1 })
 	return e
 }
 
@@ -222,7 +223,7 @@ func TestEventsReturnsNilAndClosesTheStreamWhenCancelled(t *testing.T) {
 	if err := stream.end(t); err != nil {
 		t.Errorf("got %v", err)
 	}
-	fakes.Await(t, "Docker to see the stream closed", func() bool { return docker.open() == 0 })
+	await.Until(t, "Docker to see the stream closed", func() bool { return docker.open() == 0 })
 }
 
 // Reopening is the daemon's business; the stream only has to stop.
@@ -337,7 +338,7 @@ func TestSourceDescribesEachEventByContainer(t *testing.T) {
 	defer cancel()
 	got := make(chan source.Event, 1)
 	go NewSource(docker.client(), Options{}).Events(ctx, func(event source.Event) { got <- event })
-	fakes.Await(t, "the event stream to open", func() bool { return docker.open() == 1 })
+	await.Until(t, "the event stream to open", func() bool { return docker.open() == 1 })
 
 	docker.startContainer(container("nginx", map[string]string{ForwardLabel: "80"}))
 
@@ -369,7 +370,7 @@ func TestEventsStreamOverAUnixSocket(t *testing.T) {
 	ctx, cancel := context.WithCancel(ctx)
 	got, ended := make(chan Event, 1), make(chan error, 1)
 	go func() { ended <- client.Events(ctx, ForwardLabel, func(event Event) { got <- event }) }()
-	fakes.Await(t, "the event stream to open", func() bool { return docker.open() == 1 })
+	await.Until(t, "the event stream to open", func() bool { return docker.open() == 1 })
 
 	docker.stop("nginx")
 	if event := <-got; event != (Event{Action: "die", Container: "nginx"}) {
@@ -379,5 +380,5 @@ func TestEventsStreamOverAUnixSocket(t *testing.T) {
 	if err := <-ended; err != nil {
 		t.Errorf("got %v", err)
 	}
-	fakes.Await(t, "Docker to see the stream closed", func() bool { return docker.open() == 0 })
+	await.Until(t, "Docker to see the stream closed", func() bool { return docker.open() == 0 })
 }

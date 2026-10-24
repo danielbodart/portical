@@ -173,6 +173,17 @@ sudo systemctl enable --now portical
 journalctl -u portical -f
 ```
 
+The unit is `Type=notify`: Portical tells systemd it is ready only once its first
+pass is done and it is watching for changes, so `systemctl start` and `restart`
+return with the forwards already in place, and a unit ordered `After=portical.service`
+starts after them too. A pass that fails - the router briefly unreachable, say -
+still counts, since the next one tries again. After each pass it leaves a one-line
+status, which `systemctl status portical` shows beside the unit:
+
+```
+     Status: "3 forwards, 1 in conflict"
+```
+
 The unit reads systemd units only (`PORTICAL_SOURCES=systemd`). It runs as a
 dynamic user with no capabilities, with the same sandboxing as the NixOS module:
 nothing it does needs privilege. The system bus lets any user list units and

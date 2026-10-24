@@ -11,6 +11,7 @@ import (
 	"syscall"
 
 	"github.com/danielbodart/gokit/dbusx"
+	sd "github.com/danielbodart/gokit/systemd"
 	"github.com/danielbodart/portical/internal/daemon"
 	"github.com/danielbodart/portical/internal/docker"
 	"github.com/danielbodart/portical/internal/source"
@@ -27,11 +28,11 @@ func Main(ctx context.Context, c *Container) int {
 	// Before anything else, and to stderr so it lands whatever a command
 	// later writes to stdout. See Banner: this is the breadcrumb that tells a
 	// start-up crash apart from Portical's code never having run at all.
-	c.Note(Banner(c.Args, c.Kernel()))
+	c.Log.Log(Banner(c.Args, c.Kernel()))
 
 	config, err := Parse(c.Args, c.Env)
 	if err != nil {
-		c.Note(fmt.Sprintf("Error: %s\n\n%s", err, Usage))
+		c.Log.Error(fmt.Sprintf("Error: %s\n\n%s", err, Usage))
 		return 2
 	}
 	if config.Version {
@@ -49,30 +50,30 @@ func Main(ctx context.Context, c *Container) int {
 	// result.
 	if config.Command == "relay" {
 		if len(config.Args) == 0 {
-			c.Note("Error: relay needs a payload. It is used internally by Portical.")
+			c.Log.Error("Error: relay needs a payload. It is used internally by Portical.")
 			return 2
 		}
-		return docker.RunRelay(config.Args[0], c.Stdout, c.GatewayTransport)
+		return docker.RunRelay(config.Args[0], c.Stdout, c.Gateway.Transport)
 	}
 
 	if err := run(ctx, c, config); err != nil {
-		c.Note("Error: " + err.Error())
+		c.Log.Error("Error: " + err.Error())
 		return 1
 	}
 	return 0
 }
 
 func run(ctx context.Context, c *Container, config Config) error {
-	c.Note("Connecting to the gateway...")
+	c.Log.Log("Connecting to the gateway...")
 	gateway, err := connect(ctx, c, config.Root)
 	if err != nil {
 		return err
 	}
-	c.Note("Using gateway at " + gateway.ControlURL)
+	c.Log.Log("Using gateway at " + gateway.ControlURL)
 
 	// Only commentary, so a gateway that will not say is no reason to stop.
 	if external, err := gateway.ExternalAddress(ctx); err == nil && external != "" {
-		c.Note("External address is " + external)
+		c.Log.Log("External address is " + external)
 	}
 
 	if config.Command == "list" {
@@ -95,7 +96,7 @@ func run(ctx context.Context, c *Container, config Config) error {
 		options.HostAddress = c.AddressFacing(control.Hostname())
 	}
 	if options.HostAddress != "" {
-		c.Note(fmt.Sprintf("This host is %s on the LAN", options.HostAddress))
+		c.Log.Log(fmt.Sprintf("This host is %s on the LAN", options.HostAddress))
 	}
 
 	var sources []source.Source
@@ -103,8 +104,8 @@ func run(ctx context.Context, c *Container, config Config) error {
 	for _, name := range config.Sources {
 		switch name {
 		case "docker":
-			c.Note("Talking to Docker at " + config.Socket)
-			client := docker.NewClient(c.DockerTransport(config.Socket))
+			c.Log.Log("Talking to Docker at " + config.Socket)
+			client := docker.NewClient(c.Docker(config.Socket))
 			sources = append(sources, docker.NewSource(client, docker.Options{
 				Label: config.Label, NetworkLabel: config.NetworkLabel, HostAddress: options.HostAddress,
 			}))
@@ -122,7 +123,7 @@ func run(ctx context.Context, c *Container, config Config) error {
 				defer closer.Close()
 			}
 			address := cmp.Or(c.Env["DBUS_SYSTEM_BUS_ADDRESS"], dbusx.DefaultSystemBus)
-			c.Note(fmt.Sprintf("Talking to systemd over %s, reading %s", address, config.SystemdKey))
+			c.Log.Log(fmt.Sprintf("Talking to systemd over %s, reading %s", address, config.SystemdKey))
 			sources = append(sources, systemd.NewSource(bus, c.Sockets, c.Files, c.Ephemeral, systemd.Options{
 				Key: config.SystemdKey, HostAddress: options.HostAddress,
 			}))
@@ -137,13 +138,14 @@ func run(ctx context.Context, c *Container, config Config) error {
 		Source:      combined,
 		Gateway:     gateway,
 		Options:     options,
-		Log:         c.Note,
+		Log:         c.Log,
+		Notify:      func(states ...string) error { return c.Notify(c.Env, states...) },
 		Clock:       c.Clock,
 		AsContainer: asContainer,
 	})
 
 	if options.DryRun {
-		c.Note("Dry run - nothing will be changed")
+		c.Log.Log("Dry run - nothing will be changed")
 	}
 
 	if config.Command == "update" {
@@ -168,7 +170,7 @@ func connect(ctx context.Context, c *Container, root string) (*upnp.Client, erro
 	if root != "" {
 		return upnp.At(ctx, c.Gateway, root)
 	}
-	c.Note("Searching for an internet gateway...")
+	c.Log.Log("Searching for an internet gateway...")
 	found := c.Discover(ctx)
 	if len(found) == 0 {
 		return nil, errors.New("no UPnP internet gateway found. Check UPnP is enabled on your router, and " +
@@ -207,7 +209,12 @@ func untilInterrupted(ctx context.Context, c *Container) (context.Context, func(
 		select {
 		case received := <-signals:
 			release()
-			c.Note(fmt.Sprintf("\nReceived %s, shutting down...", signalName(received)))
+			c.Log.Log(fmt.Sprintf("\nReceived %s, shutting down...", signalName(received)))
+			// Before the pass in flight and any cleanup, which systemd shows
+			// as deactivating rather than as a service still running.
+			if err := c.Notify(c.Env, sd.Stopping); err != nil {
+				c.Log.Error("Error: " + err.Error())
+			}
 			cancel()
 		case <-ctx.Done():
 		}

@@ -2,21 +2,22 @@ package cli
 
 import (
 	"context"
-	"fmt"
 	"io"
 	"io/fs"
 	"net/http"
 	"os"
 	"os/signal"
-	"strings"
-	"sync"
 	"syscall"
 
 	"github.com/danielbodart/gokit/clock"
+	"github.com/danielbodart/gokit/environ"
 	"github.com/danielbodart/gokit/httpx"
+	"github.com/danielbodart/gokit/logx"
 	"github.com/danielbodart/gokit/sockdiag"
+	sd "github.com/danielbodart/gokit/systemd"
 	"github.com/danielbodart/portical/internal/systemd"
 	"github.com/danielbodart/portical/internal/upnp"
+	"github.com/danielbodart/portical/internal/version"
 )
 
 // Container is the one object graph. Production wires it once; each test
@@ -26,16 +27,26 @@ import (
 type Container struct {
 	// The command line, without the program name, and the environment.
 	Args []string
-	Env  map[string]string
+	Env  environ.Env
 	// stdout carries only a command's output - list's rows, the version, the
 	// help, relay's framed result - so anything reading it is not corrupted
 	// by commentary, which all goes to stderr.
 	Stdout, Stderr io.Writer
+	// Running commentary and errors alike, both on Stderr by default, for the
+	// reason above. Every breadcrumb Main leaves and everything the daemon
+	// says comes through here, from many goroutines, a line at a time.
+	Log logx.Logger
+	// Tells systemd how the service is doing, as sd_notify(3) does. Nothing
+	// outside systemd - under Docker, from a shell - where there is no
+	// NOTIFY_SOCKET.
+	Notify func(env environ.Env, states ...string) error
 	// Time, for the interval and the reconnect backoff.
 	Clock clock.Clock
 	// How the gateway is reached, for SOAP, its description and `relay`.
+	// Portical names itself on it whatever it is - see Wire.
 	GatewayTransport http.RoundTripper
-	// How the Docker Engine API is reached at a socket path.
+	// How the Docker Engine API is reached at a socket path, named as the
+	// gateway's is.
 	DockerTransport func(socket string) http.RoundTripper
 	// An SSDP search: the root description URL of every device that
 	// answered.
@@ -43,7 +54,7 @@ type Container struct {
 	// This host's address on the network that reaches host, or "".
 	AddressFacing func(host string) string
 	// The system bus, from the environment.
-	Bus func(env map[string]string) (systemd.Bus, error)
+	Bus func(env environ.Env) (systemd.Bus, error)
 	// Listening sockets and their cgroups, for `published` on a unit.
 	Sockets sockdiag.Lister
 	// Unit files, rooted at /.
@@ -59,9 +70,14 @@ type Container struct {
 
 	// The gateway's HTTP client, bounded by upnp.RequestTimeout.
 	Gateway *http.Client
-
-	speaking sync.Mutex
+	// The Docker Engine API at a socket path.
+	Docker func(socket string) http.RoundTripper
 }
+
+// product is how Portical names itself to the gateway and to Docker, rather
+// than as Go's generic "Go-http-client/1.1", so a router's or a daemon's log
+// says which program is asking, and which version.
+func product() string { return "portical/" + version.Version }
 
 // Wire fills in the leaves left unset and derives the rest from them.
 func (c *Container) Wire() {
@@ -69,13 +85,19 @@ func (c *Container) Wire() {
 		c.Args = os.Args[1:]
 	}
 	if c.Env == nil {
-		c.Env = environ()
+		c.Env = environ.Current()
 	}
 	if c.Stdout == nil {
 		c.Stdout = os.Stdout
 	}
 	if c.Stderr == nil {
 		c.Stderr = os.Stderr
+	}
+	if c.Log == nil {
+		c.Log = logx.Writers(c.Stderr, c.Stderr)
+	}
+	if c.Notify == nil {
+		c.Notify = sd.Notify
 	}
 	if c.Clock == nil {
 		c.Clock = clock.System{}
@@ -114,28 +136,18 @@ func (c *Container) Wire() {
 		c.Kernel = release
 	}
 
-	c.Gateway = &http.Client{Transport: c.GatewayTransport, Timeout: upnp.RequestTimeout}
-}
-
-// Note is a line of running commentary, on stderr.
-//
-// Everything the daemon says about what it is doing, and every breadcrumb
-// Main leaves, comes through here - from the daemon's goroutines and the
-// signal handler alike, so one line is written at a time.
-func (c *Container) Note(line string) {
-	c.speaking.Lock()
-	defer c.speaking.Unlock()
-	fmt.Fprintln(c.Stderr, line)
-}
-
-func environ() map[string]string {
-	env := map[string]string{}
-	for _, entry := range os.Environ() {
-		if name, value, ok := strings.Cut(entry, "="); ok {
-			env[name] = value
-		}
+	// Named here rather than in the defaults, so a transport a test hands in
+	// is named too, and the test sees what the gateway would.
+	//
+	// Not Retrying: a gateway answers every UPnP fault as a 500 - a conflict,
+	// and the end of the mapping table that every listing reads up to - so
+	// it would retry what was never going to change, slowing each pass, and
+	// the next pass already tries again whatever did fail.
+	identifying := httpx.Identifying(product())
+	c.Gateway = &http.Client{Transport: httpx.Decorate(c.GatewayTransport, identifying), Timeout: upnp.RequestTimeout}
+	c.Docker = func(socket string) http.RoundTripper {
+		return httpx.Decorate(c.DockerTransport(socket), identifying)
 	}
-	return env
 }
 
 // interrupts is SIGINT and SIGTERM, caught rather than fatal.

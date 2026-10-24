@@ -8,9 +8,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/danielbodart/gokit/await"
 	"github.com/danielbodart/gokit/dbusx"
 	"github.com/danielbodart/gokit/dbusx/dbustest"
-	"github.com/danielbodart/portical/internal/fakes"
 	"github.com/godbus/dbus/v5"
 )
 
@@ -225,7 +225,7 @@ func TestDBusReconnectsForTheNextQueryAfterTheBusDrops(t *testing.T) {
 		t.Fatal(err)
 	}
 	fake.Disconnect()
-	fakes.Await(t, "the connection to notice", func() bool {
+	await.Until(t, "the connection to notice", func() bool {
 		bus.mu.Lock()
 		defer bus.mu.Unlock()
 		return !bus.shared.Connected()
@@ -244,7 +244,7 @@ func watch(t *testing.T, fake *dbustest.Bus, bus *DBus) (<-chan Change, <-chan e
 	changes, done := make(chan Change, 16), make(chan error, 1)
 	go func() { done <- bus.Watch(watching, func(change Change) { changes <- change }) }()
 	t.Cleanup(stop)
-	fakes.Await(t, "the subscription", func() bool { return len(fake.Calls("Subscribe")) == 1 })
+	await.Until(t, "the subscription", func() bool { return len(fake.Calls("Subscribe")) == 1 })
 	return changes, done, stop
 }
 
@@ -297,7 +297,7 @@ func TestDBusSubscribesAndTurnsSignalsIntoChangesUntilCancelled(t *testing.T) {
 	stop()
 	assertEqual(t, <-done, nil)
 	// Its own connection, closed with it; queries never opened the shared one.
-	fakes.Await(t, "the connection to close", func() bool { return fake.Connected() == 0 })
+	await.Until(t, "the connection to close", func() bool { return fake.Connected() == 0 })
 }
 
 // A pass started mid-reload would find units not yet reloaded still marked as

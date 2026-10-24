@@ -7,6 +7,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/danielbodart/gokit/await"
 	"github.com/danielbodart/portical/internal/fakes"
 	"github.com/danielbodart/portical/internal/model"
 	"github.com/danielbodart/portical/internal/source"
@@ -138,7 +139,7 @@ func TestCombinePassesOnEventsFromEverySource(t *testing.T) {
 	reading := read(combine(t, docker, systemd), 2)
 
 	docker.Emit(source.Event{Description: "Container nginx start"})
-	fakes.Await(t, "the first event", func() bool { return reading.count() == 1 })
+	await.Until(t, "the first event", func() bool { return reading.count() == 1 })
 	systemd.Emit(source.Event{})
 
 	if err := <-reading.done; err != nil {
@@ -155,7 +156,7 @@ func TestCombinePassesOnEventsFromEverySource(t *testing.T) {
 func TestCombineReturnsWhenAnyStreamFailsAndStopsTheOthers(t *testing.T) {
 	docker, systemd := fakes.NewSource(), fakes.NewSource()
 	reading := read(combine(t, docker, systemd), 0)
-	fakes.Await(t, "both streams to open", func() bool { return docker.Open() == 1 && systemd.Open() == 1 })
+	await.Until(t, "both streams to open", func() bool { return docker.Open() == 1 && systemd.Open() == 1 })
 
 	systemd.Drop(errors.New("D-Bus connection closed"))
 
@@ -170,7 +171,7 @@ func TestCombineReturnsWhenAnyStreamFailsAndStopsTheOthers(t *testing.T) {
 func TestCombineEndsWhenAnyStreamEndsSoTheDaemonReopensThemAll(t *testing.T) {
 	docker, systemd := fakes.NewSource(), fakes.NewSource()
 	reading := read(combine(t, docker, systemd), 0)
-	fakes.Await(t, "both streams to open", func() bool { return docker.Open() == 1 && systemd.Open() == 1 })
+	await.Until(t, "both streams to open", func() bool { return docker.Open() == 1 && systemd.Open() == 1 })
 
 	docker.Drop(nil)
 

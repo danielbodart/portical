@@ -3,10 +3,12 @@ package daemon
 import (
 	"context"
 	"slices"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/danielbodart/gokit/clock"
+	"github.com/danielbodart/gokit/logx/logtest"
 	"github.com/danielbodart/portical/internal/fakes"
 	"github.com/danielbodart/portical/internal/model"
 	"github.com/danielbodart/portical/internal/rules"
@@ -30,9 +32,20 @@ var ctx = context.Background()
 type harness struct {
 	source *fakes.Source
 	router *fakes.Gateway
-	log    *fakes.Log
+	log    *logtest.Logger
 	clock  *clock.Stopped
 	daemon *Daemon
+
+	mu sync.Mutex
+	// Every sd_notify state the daemon sent, in order.
+	states []string
+}
+
+// notified is every state the daemon has told systemd, in order.
+func (h *harness) notified() []string {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return slices.Clone(h.states)
 }
 
 func newHarness(t *testing.T, quirks fakes.Quirks, edit ...func(*Options)) *harness {
@@ -40,7 +53,7 @@ func newHarness(t *testing.T, quirks fakes.Quirks, edit ...func(*Options)) *harn
 	h := &harness{
 		source: fakes.NewSource(),
 		router: fakes.NewGateway(quirks),
-		log:    &fakes.Log{},
+		log:    &logtest.Logger{},
 		clock:  clock.NewStopped(time.Date(2026, 10, 23, 12, 0, 0, 0, time.UTC)),
 	}
 	gateway, err := upnp.At(ctx, h.router.Client(), fakes.RootURL)
@@ -52,7 +65,14 @@ func newHarness(t *testing.T, quirks fakes.Quirks, edit ...func(*Options)) *harn
 	for _, e := range edit {
 		e(&options)
 	}
-	h.daemon = New(Deps{Source: h.source, Gateway: gateway, Options: options, Log: h.log.Line, Clock: h.clock})
+	h.daemon = New(Deps{Source: h.source, Gateway: gateway, Options: options, Log: h.log, Clock: h.clock,
+		Notify: func(states ...string) error {
+			h.mu.Lock()
+			defer h.mu.Unlock()
+			h.states = append(h.states, states...)
+			return nil
+		},
+	})
 	return h
 }
 

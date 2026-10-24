@@ -13,9 +13,12 @@ import (
 	"testing/fstest"
 	"time"
 
+	"github.com/danielbodart/gokit/await"
 	"github.com/danielbodart/gokit/clock"
+	"github.com/danielbodart/gokit/environ"
 	"github.com/danielbodart/gokit/httpx"
 	"github.com/danielbodart/gokit/sockdiag"
+	sd "github.com/danielbodart/gokit/systemd"
 	"github.com/danielbodart/portical/internal/docker"
 	"github.com/danielbodart/portical/internal/fakes"
 	"github.com/danielbodart/portical/internal/model"
@@ -36,7 +39,7 @@ type world struct {
 	signals chan os.Signal
 	stdout  *output
 	stderr  *output
-	env     map[string]string
+	env     environ.Env
 
 	mu sync.Mutex
 	// What an SSDP search finds, and which hosts we asked the route to.
@@ -45,6 +48,10 @@ type world struct {
 	facing     []string
 	mountinfo  string
 	gatewayHit int
+	agents     []string
+	// Every sd_notify state sent, in order, and the NOTIFY_SOCKET each was
+	// sent to.
+	states []string
 }
 
 const ownContainer = "4f1c2a9b8e7d6c5b4a39281706f5e4d3c2b1a09f8e7d6c5b4a3928170f6e5d4c"
@@ -60,7 +67,7 @@ func newWorld(t *testing.T) *world {
 		signals:    make(chan os.Signal, 1),
 		stdout:     &output{},
 		stderr:     &output{},
-		env:        map[string]string{},
+		env:        environ.Env{},
 		discovered: []string{fakes.RootURL},
 		// The host, not a container: nothing in it names a container id.
 		mountinfo: "22 1 0:21 / / rw,relatime - ext4 /dev/sda1 rw\n",
@@ -81,6 +88,7 @@ func (w *world) container(args ...string) *Container {
 		GatewayTransport: httpx.RoundTripperFunc(func(r *http.Request) (*http.Response, error) {
 			w.mu.Lock()
 			w.gatewayHit++
+			w.agents = append(w.agents, r.UserAgent())
 			w.mu.Unlock()
 			return httpx.HandlerTransport(w.router).RoundTrip(r)
 		}),
@@ -97,14 +105,28 @@ func (w *world) container(args ...string) *Container {
 			w.facing = append(w.facing, host)
 			return fakes.HostAddress
 		},
-		Bus:       func(map[string]string) (systemd.Bus, error) { return w.systemd, nil },
+		Bus:       func(environ.Env) (systemd.Bus, error) { return w.systemd, nil },
 		Sockets:   sockdiag.ListerFunc(func(context.Context) ([]sockdiag.Listener, error) { return nil, nil }),
 		Files:     files,
 		Ephemeral: func() (int, int, error) { return 32768, 60999, nil },
 		MountInfo: func() ([]byte, error) { return []byte(w.mountinfo), nil },
 		Signals:   func() (<-chan os.Signal, func()) { return w.signals, func() {} },
 		Kernel:    func() string { return "6.18.57-test" },
+		Notify: func(env environ.Env, states ...string) error {
+			w.mu.Lock()
+			defer w.mu.Unlock()
+			for _, state := range states {
+				w.states = append(w.states, env["NOTIFY_SOCKET"]+" "+state)
+			}
+			return nil
+		},
 	}
+}
+
+func (w *world) notified() []string {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return slices.Clone(w.states)
 }
 
 // main runs a command to the end.
@@ -374,15 +396,15 @@ func TestMainRunsUntilSIGTERMAndLeavesItsMappingsInPlace(t *testing.T) {
 	w.docker.container("nginx", nginx(), "bridge", "bridge", "172.17.0.2")
 
 	code := w.start("run")
-	fakes.Await(t, "the forward", func() bool { return len(w.router.Mappings()) == 1 })
-	fakes.Await(t, "the event stream", func() bool { return w.docker.open() == 1 })
+	await.Until(t, "the forward", func() bool { return len(w.router.Mappings()) == 1 })
+	await.Until(t, "the event stream", func() bool { return w.docker.open() == 1 })
 	w.signals <- syscall.SIGTERM
 
 	w.expectExit(w.exited(code), 0)
 	w.says("\nReceived SIGTERM, shutting down...")
 	w.never("Removing Portical's mappings")
 	w.expectMapped("portical: (8080:80/tcp) nginx -> 192.168.1.5")
-	fakes.Await(t, "the event stream closed", func() bool { return w.docker.open() == 0 })
+	await.Until(t, "the event stream closed", func() bool { return w.docker.open() == 0 })
 }
 
 func TestMainTakesV1sPollAndListenAsRun(t *testing.T) {
@@ -392,7 +414,7 @@ func TestMainTakesV1sPollAndListenAsRun(t *testing.T) {
 		w.env["PORTICAL_SOURCES"] = "systemd"
 
 		code := w.start(args...)
-		fakes.Await(t, "the bus watched", func() bool { return w.systemd.watching() == 1 })
+		await.Until(t, "the bus watched", func() bool { return w.systemd.watching() == 1 })
 		w.signals <- syscall.SIGINT
 
 		w.expectExit(w.exited(code), 0)
@@ -409,7 +431,7 @@ func TestMainRepeatsThePassEveryInterval(t *testing.T) {
 	w.docker.container("nginx", nginx(), "bridge", "bridge", "172.17.0.2")
 
 	code := w.start("-d", "30", "run")
-	fakes.Await(t, "the forward", func() bool { return len(w.router.Mappings()) == 1 })
+	await.Until(t, "the forward", func() bool { return len(w.router.Mappings()) == 1 })
 	w.router.ClearActions()
 	if err := w.clock.BlockUntil(context.Background(), 1); err != nil {
 		t.Fatal(err)
@@ -419,7 +441,7 @@ func TestMainRepeatsThePassEveryInterval(t *testing.T) {
 		t.Fatal("passed before the interval")
 	}
 	w.clock.Advance(time.Second)
-	fakes.Await(t, "a second pass", func() bool { return w.router.Received("GetGenericPortMappingEntry") > 0 })
+	await.Until(t, "a second pass", func() bool { return w.router.Received("GetGenericPortMappingEntry") > 0 })
 
 	w.signals <- syscall.SIGTERM
 	w.expectExit(w.exited(code), 0)
@@ -431,7 +453,7 @@ func TestMainRemovesItsMappingsOnExitWhenAsked(t *testing.T) {
 	w.router.Given(model.Mapping{ExternalPort: 22, Protocol: model.TCP, InternalClient: fakes.HostAddress, InternalPort: 22, Description: "someone else's"})
 
 	code := w.start("--cleanup-on-exit", "run")
-	fakes.Await(t, "the forward", func() bool { return len(w.router.Mappings()) == 2 })
+	await.Until(t, "the forward", func() bool { return len(w.router.Mappings()) == 2 })
 	w.signals <- syscall.SIGTERM
 
 	w.expectExit(w.exited(code), 0)
@@ -445,7 +467,7 @@ func TestMainRemovesNothingOnExitInADryRun(t *testing.T) {
 	w.docker.container("nginx", nginx(), "bridge", "bridge", "172.17.0.2")
 
 	code := w.start("--cleanup-on-exit", "--dry-run", "run")
-	fakes.Await(t, "the event stream", func() bool { return w.docker.open() == 1 })
+	await.Until(t, "the event stream", func() bool { return w.docker.open() == 1 })
 	w.signals <- syscall.SIGTERM
 
 	w.expectExit(w.exited(code), 0)
@@ -521,6 +543,10 @@ func TestMainRelaysARequestAndPrintsOnlyTheFramedResult(t *testing.T) {
 	if w.searches != 0 || len(w.docker.seen()) != 0 {
 		t.Fatal("relay went looking for a gateway or Docker")
 	}
+	// The request is the host's, but the helper is what asks.
+	if want := []string{"portical/" + version.Version}; !slices.Equal(w.agents, want) {
+		t.Errorf("relayed as %q, want %q", w.agents, want)
+	}
 }
 
 func TestMainRefusesARelayWithNoPayload(t *testing.T) {
@@ -529,5 +555,61 @@ func TestMainRefusesARelayWithNoPayload(t *testing.T) {
 	w.says("Error: relay needs a payload. It is used internally by Portical.")
 	if w.stdout.String() != "" {
 		t.Fatal(w.stdout)
+	}
+}
+
+// Under Type=notify, systemd holds the start - and a `systemctl restart` -
+// until Ready, so it comes once the first pass is done and Portical is
+// watching, and Stopping as soon as a signal begins the shutdown.
+func TestMainTellsSystemdItIsReadyOnceWatchingAndWhenItIsStopping(t *testing.T) {
+	w := newWorld(t)
+	w.env["NOTIFY_SOCKET"] = "/run/systemd/notify"
+	w.docker.container("nginx", nginx(), "bridge", "bridge", "172.17.0.2")
+
+	code := w.start("run")
+	await.Until(t, "ready", func() bool { return slices.Contains(w.notified(), "/run/systemd/notify "+sd.Ready) })
+	w.expectMapped("portical: (8080:80/tcp) nginx -> 192.168.1.5")
+	w.signals <- syscall.SIGTERM
+	w.expectExit(w.exited(code), 0)
+
+	want := []string{
+		"/run/systemd/notify " + sd.Status("1 forward"),
+		"/run/systemd/notify " + sd.Ready,
+		"/run/systemd/notify " + sd.Stopping,
+	}
+	if got := w.notified(); !slices.Equal(got, want) {
+		t.Errorf("notified %q, want %q", got, want)
+	}
+}
+
+// update is a one-shot - a Type=oneshot unit, a cron job - with nothing to be
+// ready for.
+func TestMainTellsSystemdNothingForAnUpdate(t *testing.T) {
+	w := newWorld(t)
+	w.env["NOTIFY_SOCKET"] = "/run/systemd/notify"
+	w.docker.container("nginx", nginx(), "bridge", "bridge", "172.17.0.2")
+
+	w.expectExit(w.main("update"), 0)
+
+	if got := w.notified(); len(got) != 0 {
+		t.Errorf("notified %q", got)
+	}
+}
+
+func TestMainNamesItselfToTheGatewayAndToDocker(t *testing.T) {
+	w := newWorld(t)
+	w.docker.container("nginx", nginx(), "bridge", "bridge", "172.17.0.2")
+
+	w.expectExit(w.main("update"), 0)
+
+	want := []string{"portical/" + version.Version}
+	w.mu.Lock()
+	gateway := slices.Compact(slices.Clone(w.agents))
+	w.mu.Unlock()
+	if !slices.Equal(gateway, want) {
+		t.Errorf("the gateway was asked by %q, want %q", gateway, want)
+	}
+	if got := w.docker.userAgents(); !slices.Equal(got, want) {
+		t.Errorf("Docker was asked by %q, want %q", got, want)
 	}
 }
