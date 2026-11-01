@@ -1,12 +1,27 @@
 #!/bin/sh
 # The one place Portical's build is defined, so CI runs the same commands a
-# developer does: ./run <version|check|test|build|release|image> [args].
+# developer does. mise.toml's tasks (check, build, dist) call it; CI's gates
+# call the rest: ./run <version|lint|test|check|build|dist|smoke|install-check|release-due|image>.
 set -eu
 
 cd "$(dirname "$0")"
 
+NAME=portical
+
 # The package the version is set in, at link time.
 VERSION_VAR=github.com/danielbodart/portical/internal/version.Version
+
+# Every architecture released, by its Docker platform's name without the
+# slashes, which is what the Dockerfile asks dist/ for.
+ARCHES="amd64 arm64 armv7"
+
+# The plain units shipped beside the binary.
+UNITS="systemd/portical.service"
+
+# What a release is built from. A change to any of these since the last release
+# tag releases; anything else - docs, workflows, the flake and its lock - goes
+# out with the next release one of these makes.
+RELEASE_PATHS="main.go internal go.mod go.sum mise.toml run Dockerfile systemd"
 
 die() {
   echo "Error: $*" >&2
@@ -15,13 +30,12 @@ die() {
 
 # The version, derived from the repository rather than stored in it.
 #
-# Only the major is committed, in MAJOR (a file, so that the flake reads the
-# same one), because only the major is a decision: it says this is the rewrite
-# and the shell script was v1, and moving it is something a person does
-# deliberately when compatibility breaks. The rest is a fact about the build,
-# so recording it in the tree would only create a number that can disagree with
-# what was published - a bump commit to forget, or a tag that says something
-# the artifact does not.
+# Only the major is committed, in MAJOR, because only the major is a decision:
+# it says this is the rewrite and the shell script was v1, and moving it is
+# something a person does deliberately when compatibility breaks. The rest is a
+# fact about the build, so recording it in the tree would only create a number
+# that can disagree with what was published - a bump commit to forget, or a tag
+# that says something the artifact does not.
 #
 # Minor is the commit count, so it only ever goes up and names exactly one
 # commit. Patch is the CI run number, which separates two builds of the same
@@ -38,7 +52,7 @@ version() {
   echo "$(cat MAJOR).$(git rev-list --count HEAD).${GITHUB_RUN_NUMBER:-$(date -u +%Y%m%d%H%M%S)}"
 }
 
-check() {
+lint() {
   unformatted=$(gofmt -l .)
   [ -z "$unformatted" ] || die "not gofmt'd: $unformatted"
   go vet ./...
@@ -46,6 +60,11 @@ check() {
 
 test() {
   go test -count=1 "$@" ./...
+}
+
+check() {
+  lint
+  test "$@"
 }
 
 # Static, so the one binary runs on any distribution, glibc or musl, and in an
@@ -60,43 +79,122 @@ compile() {
     go build -trimpath -ldflags "-s -w -X $VERSION_VAR=$1" -o "$3" .
 }
 
+goarch() {
+  case $1 in
+    armv7) echo arm ;;
+    *) echo "$1" ;;
+  esac
+}
+
+# The name the first releases gave each architecture, which every
+# releases/latest/download link points at: x64 is Go's amd64.
+asset_arch() {
+  case $1 in
+    amd64) echo x64 ;;
+    *) echo "$1" ;;
+  esac
+}
+
 build() {
-  outfile=${1:-dist/portical}
+  outfile=${1:-dist/$NAME}
   v=$(version)
   compile "$v" "$(go env GOARCH)" "$outfile"
   echo "built $outfile $v"
 }
 
-# What a GitHub release carries: a binary per architecture, the systemd unit
-# that runs it, and their checksums, all in one directory for CI to upload as
-# they are. The names are what docs/systemd.md's install snippet and every
-# releases/latest/download link point at, so they stay put - x64 is Go's
-# amd64, under the name the first releases gave it.
-release() {
-  dir=${1:-dist/release}
+# Everything the upstream channel ships, from one compile per architecture:
+#
+#   dist/linux-<arch>/NAME     what the Dockerfile copies into each image
+#   dist/release/              what a GitHub release carries: a binary per
+#                              architecture, the unit(s), a tarball per
+#                              architecture holding both with the README and
+#                              LICENSE, and SHA256SUMS of them all
+#   dist/version               the version all of it says, for CI's gates
+dist() {
   v=$(version)
-  rm -rf "$dir"
-  mkdir -p "$dir"
-  compile "$v" amd64 "$dir/portical-linux-x64"
-  compile "$v" arm64 "$dir/portical-linux-arm64"
-  compile "$v" arm "$dir/portical-linux-armv7"
-  cp systemd/portical.service "$dir/"
-  (cd "$dir" && sha256sum portical-linux-x64 portical-linux-arm64 portical-linux-armv7 portical.service > SHA256SUMS)
-  echo "built $dir $v"
+  rm -rf dist
+  mkdir -p dist/release
+  for arch in $ARCHES; do
+    compile "$v" "$(goarch "$arch")" "dist/linux-$arch/$NAME"
+    asset=$NAME-linux-$(asset_arch "$arch")
+    cp "dist/linux-$arch/$NAME" "dist/release/$asset"
+    stage=dist/stage/$asset/$NAME-$v
+    mkdir -p "$stage"
+    # shellcheck disable=SC2086 # $UNITS is a list of plain paths
+    cp "dist/linux-$arch/$NAME" $UNITS README.md LICENSE "$stage/"
+    tar -C "dist/stage/$asset" --sort=name --owner=0 --group=0 --numeric-owner \
+      -czf "dist/release/$asset.tar.gz" "$NAME-$v"
+  done
+  rm -rf dist/stage
+  # shellcheck disable=SC2086 # $UNITS is a list of plain paths
+  cp $UNITS dist/release/
+  (CDPATH='' cd dist/release && sha256sum -- * > SHA256SUMS)
+  echo "$v" > dist/version
+  echo "built dist $v"
 }
 
-# The same image CI publishes, for every architecture, built locally.
+# The image for this machine's architecture from dist/, run: it must say the
+# version dist/ was built as.
+smoke() {
+  v=$(cat dist/version)
+  docker buildx build --platform linux/amd64 --build-arg VERSION="$v" --load --tag "$NAME:smoke" .
+  said=$(docker run --rm "$NAME:smoke" --version)
+  [ "$said" = "$v" ] || die "the image says '$said' but dist is $v"
+  echo "image says $said"
+}
+
+# The x64 tarball installed as its README says, the binary where the units
+# expect it, and the units checked against a real systemd. Needs sudo.
+install_check() {
+  v=$(cat dist/version)
+  root=$(mktemp -d)
+  tar -C "$root" -xzf "dist/release/$NAME-linux-x64.tar.gz"
+  dir=$root/$NAME-$v
+  sudo install -m 755 "$dir/$NAME" "/usr/local/bin/$NAME"
+  said=$("/usr/local/bin/$NAME" --version)
+  [ "$said" = "$v" ] || die "the tarball's binary says '$said' but dist is $v"
+  set --
+  for file in "$dir"/*; do
+    case $file in
+      *.sysusers) sudo systemd-sysusers "$file" ;;
+      *.service | *.socket) set -- "$@" "$file" ;;
+    esac
+  done
+  # Together, so each unit finds the ones it names.
+  systemd-analyze verify "$@"
+  echo "installed and verified $NAME-$v"
+}
+
+# Succeeds when a file in RELEASE_PATHS changed since the last release tag, or
+# there is none yet.
+release_due() {
+  last=$(git describe --tags --abbrev=0 --match 'v*' HEAD 2>/dev/null) || {
+    echo "no release yet" >&2
+    return 0
+  }
+  # shellcheck disable=SC2086 # $RELEASE_PATHS is a list of plain paths
+  changed=$(git diff --name-only "$last" HEAD -- $RELEASE_PATHS)
+  [ -n "$changed" ] || {
+    echo "nothing released has changed since $last" >&2
+    return 1
+  }
+  echo "changed since $last:" "$changed" >&2
+}
+
+# The same image CI publishes, for every architecture, from dist/.
 image() {
-  docker buildx build --platform linux/amd64,linux/arm64,linux/arm/v7 --build-arg VERSION="$(version)" \
-    --tag "${1:-danielbodart/portical:dev}" .
+  docker buildx build --platform linux/amd64,linux/arm64,linux/arm/v7 --build-arg VERSION="$(cat dist/version)" \
+    --tag "${1:-danielbodart/$NAME:dev}" .
 }
 
 command=${1:-build}
 [ $# -gt 0 ] && shift
 case $command in
-  version|check|test|build|release|image) "$command" "$@" ;;
+  version|lint|test|check|build|dist|smoke|image) "$command" "$@" ;;
+  install-check) install_check ;;
+  release-due) release_due ;;
   *)
-    echo "Error: '$command' is not a command. Try: version, check, test, build, release, image" >&2
+    echo "Error: '$command' is not a command. Try: version, lint, test, check, build, dist, smoke, install-check, release-due, image" >&2
     exit 2
     ;;
 esac

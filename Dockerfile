@@ -1,33 +1,12 @@
-# Built on the *build* platform whatever the target, and cross-compiled to the
-# target architecture by Go itself. Emulating an arm toolchain under QEMU to
-# produce an arm image takes minutes; this takes seconds.
+# The binary `mise run dist` built for the target architecture, and nothing
+# compiled here: the release binaries and every image come from the one compile,
+# by the Go mise.toml pins, so they cannot disagree.
 #
-# Pinned to the Go that mise.toml names, rather than floating on a tag that
-# would change the compiler under a rebuild with no commit to say so.
-FROM --platform=$BUILDPLATFORM golang:1.27.3-alpine AS build
-
-WORKDIR /src
-
-# The modules (godbus, gokit) are fetched in a layer of their own,
-# which the source changing does not invalidate.
-COPY go.mod go.sum ./
-RUN go mod download
-
-COPY main.go ./
-COPY internal ./internal
-
-# Computed by ./run from the git history, which is not in the build context -
-# so it is passed in rather than worked out here. A build with no --build-arg
-# still works and says "development", which is the truth about that build.
-ARG VERSION=development
-
-# TARGETVARIANT is "v7" for linux/arm/v7 and empty for the others; GOARM wants
-# the bare number, and ignores it on every architecture but arm.
-ARG TARGETARCH
-ARG TARGETVARIANT
-RUN CGO_ENABLED=0 GOOS=linux GOARCH=$TARGETARCH GOARM=${TARGETVARIANT#v} \
-    go build -trimpath -ldflags "-s -w -X github.com/danielbodart/portical/internal/version.Version=$VERSION" \
-    -o /out/usr/local/bin/portical .
+# Only what an empty image cannot make for itself comes from Alpine, pinned by
+# digest so a rebuild cannot change it with no commit to say so; the weekly
+# update moves the digest. Its stage runs on the build platform whatever the
+# target, since nothing taken from it depends on the architecture.
+FROM --platform=$BUILDPLATFORM alpine:3.24@sha256:be2656061b536c1883c4034790e21d0a09c5aaaf51968b89368a3c0371ea2c9a AS base
 
 # v1 was a shell script at this path, and its README told people to write
 # `command: "/opt/portical/run poll"`. Those compose files are still running.
@@ -44,9 +23,9 @@ RUN mkdir -p /out/opt/portical && ln -s /usr/local/bin/portical /out/opt/portica
 # to reap.
 FROM scratch
 
-# An ARG does not survive into the next stage, so it is declared again. These
-# labels are how `docker inspect` answers what a pulled image actually is,
-# which matters when every published tag also exists as :latest.
+# Computed by ./run from the git history and passed in, as dist/ was built
+# with it. These labels are how `docker inspect` answers what a pulled image
+# actually is, which matters when every published tag also exists as :latest.
 ARG VERSION=development
 LABEL org.opencontainers.image.version="$VERSION" \
       org.opencontainers.image.title="portical" \
@@ -58,8 +37,14 @@ LABEL org.opencontainers.image.version="$VERSION" \
 # router seen so far, but the option accepts https, and a bundle of a few
 # hundred kilobytes is cheaper than an x509 error nobody can fix from outside
 # the image.
-COPY --from=build /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
-COPY --from=build /out/ /
+COPY --from=base /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
+COPY --from=base /out/ /
+
+# TARGETVARIANT is "v7" for linux/arm/v7 and empty for the others, so this is
+# dist/linux-amd64, dist/linux-arm64 or dist/linux-armv7.
+ARG TARGETARCH
+ARG TARGETVARIANT
+COPY dist/linux-${TARGETARCH}${TARGETVARIANT}/portical /usr/local/bin/portical
 
 # Portical only reads the Docker socket, so it does not need to be root - but
 # it does need to be in the group that owns the socket. That group id varies by

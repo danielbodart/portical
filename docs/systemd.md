@@ -117,7 +117,7 @@ ports are the recommended form:
 
 ## Installing from a release
 
-Every build of `master` is published as a
+Every release is published as a
 [GitHub release](https://github.com/danielbodart/portical/releases), with a
 standalone binary for each architecture and a unit file to run it:
 
@@ -127,7 +127,9 @@ standalone binary for each architecture and a unit file to run it:
 | `portical-linux-arm64` | The binary, for 64-bit ARM - a Pi 3/4/5 on 64-bit Raspberry Pi OS, or an ARM NAS. |
 | `portical-linux-armv7` | The binary, for 32-bit ARMv7 - a Pi 2 onwards on 32-bit Raspberry Pi OS, or an armhf NAS. |
 | `portical.service` | The unit file. |
+| `portical-linux-<arch>.tar.gz` | The binary and the unit file together, with the README and LICENSE. |
 | `SHA256SUMS` | Checksums of the above. |
+| `*.sigstore.json` | A cosign keyless signature of each of the above, by this repository's CI. |
 
 The binaries are static, so they run on any distribution, glibc or musl, and
 have no dependencies at all: Portical is a single file.

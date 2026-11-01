@@ -180,6 +180,34 @@ listing-caching ideas in [#8](https://github.com/danielbodart/portical/pull/8), 
 of which are in v2, and to [@jhenkens](https://github.com/jhenkens), whose
 [Python fork](https://github.com/jhenkens/portical) is worth a look.
 
+## Channels
+
+Portical ships through two channels, each built the way its consumers expect:
+
+- **Upstream** - the Docker image (`danielbodart/portical` and
+  `ghcr.io/danielbodart/portical`, for amd64, arm64 and armv7) and the
+  [GitHub releases](https://github.com/danielbodart/portical/releases): a static
+  binary and a tarball (binary, systemd unit, README, LICENSE) per architecture,
+  `SHA256SUMS`, and a cosign keyless signature of each
+  (`cosign verify-blob --bundle <asset>.sigstore.json --certificate-identity-regexp
+  '^https://github.com/danielbodart/portical/' --certificate-oidc-issuer
+  https://token.actions.githubusercontent.com <asset>`). Built by
+  [mise](https://mise.jdx.dev) with the Go `mise.toml` pins (`mise run dist`);
+  the image is that binary in an empty image. Consume it with `docker run
+  danielbodart/portical`, or the tarball and its unit as in
+  [docs/systemd.md](docs/systemd.md).
+- **Distro** - the flake's `packages.default` and `nixosModules.default`, built
+  by nixpkgs (nixos-26.05, `go_1_27`) and cached at `danielbodart.cachix.org`.
+  Consume it as a flake input with `inputs.nixpkgs.follows`, and
+  `services.portical`.
+
+A release is made when something it is built from changes (`RELEASE_PATHS` in
+`./run`), and only once every channel's tests pass: `mise run check`, the flake
+check with its NixOS VM test, the image run, and the tarball installed under
+systemd. Every dependency - the flake's inputs, mise's tools to their latest
+patch, the base image's digest and the Go modules - moves once a week, on
+Sunday at 21:23 UTC, committed straight to `master` when all of that passes.
+
 ## Development
 
 Portical is Go, and the standard library apart from
@@ -190,12 +218,12 @@ separate `dbusx` module, over godbus, for the D-Bus plumbing every systemd
 client needs and the fake bus the D-Bus tests talk to.
 
 ```shell
-mise install       # installs the pinned Go
-./run test         # go test, every package
-./run check        # gofmt and go vet
-./run build        # a static binary for this machine, into dist/
-./run release      # every architecture's binary, the unit and checksums, into dist/release/
-./run image        # the image, for every architecture, locally
+mise install       # installs the pinned Go, and cosign
+mise run check     # gofmt, go vet and go test, every package
+mise run build     # a static binary for this machine, into dist/
+mise run dist      # every architecture's binary and tarball, the unit and checksums, into dist/
+./run smoke        # the image for this machine from dist/, run: it must say its version
+./run image        # the image, for every architecture, from dist/
 nix build          # the Nix package, running the tests on the way
 nix flake check    # also the module check and the NixOS VM test (needs KVM)
 ```
@@ -212,10 +240,11 @@ be pinned and rolled back:
 image: 'danielbodart/portical:2.58.412'
 ```
 
-Every build that publishes an image also publishes a
+Every release publishes the images and a
 [GitHub release](https://github.com/danielbodart/portical/releases) of the same
 version, tagged `v2.58.412`, with the standalone binaries for `x64`, `arm64` and
-`armv7`, the systemd unit, and their `SHA256SUMS`.
+`armv7`, a tarball of each with the systemd unit, the unit itself, their
+`SHA256SUMS`, and a sigstore bundle for each.
 
 The number is derived from the repository rather than stored in it. Only the
 major is committed - in `MAJOR`, because that one is a decision: it says this is

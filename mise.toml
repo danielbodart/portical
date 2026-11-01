@@ -1,2 +1,29 @@
+# The upstream channel's toolchain - the Docker image and the release binaries
+# and tarballs - and the dev loop's. Go's major.minor is the flake's go_1_27
+# from nixos-26.05, so both channels build with the same language version; the
+# weekly update moves each tool to the latest patch of its minor, and a new
+# minor moves here and in nix/package.nix together, by hand.
 [tools]
 go = "1.27.3"
+# Signs the release assets, keyless, in CI.
+cosign = "3.0.6"
+
+[tasks.lint]
+description = "gofmt and go vet"
+run = "./run lint"
+
+[tasks.test]
+description = "Unit tests"
+run = "./run test"
+
+[tasks.check]
+description = "Lint and unit tests: the dev loop, and CI's fast job"
+depends = ["lint", "test"]
+
+[tasks.build]
+description = "A static binary for this machine, into dist/"
+run = "./run build"
+
+[tasks.dist]
+description = "Every architecture's binary and tarball, the units and SHA256SUMS, into dist/"
+run = "./run dist"
