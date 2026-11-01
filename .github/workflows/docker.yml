@@ -27,7 +27,7 @@ jobs:
 
       # mise.toml is the one place Go's version is pinned, for CI and for
       # anyone working on this locally.
-      - uses: jdx/mise-action@v4
+      - uses: jdx/mise-action@v5
 
       - name: Format and vet
         run: ./run check
@@ -88,7 +88,7 @@ jobs:
       # Only here to run ./run, which is the single place the version is
       # defined - deriving it again in shell would be a second definition to
       # keep in step with the first.
-      - uses: jdx/mise-action@v4
+      - uses: jdx/mise-action@v5
 
       - name: Version
         id: version
@@ -161,7 +161,7 @@ jobs:
         with:
           fetch-depth: 0
 
-      - uses: jdx/mise-action@v4
+      - uses: jdx/mise-action@v5
 
       # Every architecture's binary, the unit and their checksums, into
       # dist/release.
