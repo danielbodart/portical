@@ -19,7 +19,7 @@
   # godbus, gokit, gokit/dbusx and the golang.org/x/sys godbus needs, as
   # `go mod vendor` lays them out. A go.sum change needs it recomputed: build once with
   # lib.fakeHash and take the hash Nix reports.
-  vendorHash = "sha256-QmQCZNC0mod6lZXMlq6CTtq+V6QAuNUZPbrGXOrJgms=";
+  vendorHash = "sha256-Cyt+tMLYmCPdFhdBxnALOAG7o5X7o8S3ovvIiPNfj7Q=";
 
   env.CGO_ENABLED = 0;
   ldflags = [
