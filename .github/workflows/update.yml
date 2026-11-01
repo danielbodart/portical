@@ -1,0 +1,168 @@
+# Every dependency moves once a week, together, and only if everything CI
+# tests still passes with the lot:
+#
+#   - the flake's inputs (nixpkgs);
+#   - mise.toml's tools, each to the latest patch of the minor it pins (a new
+#     minor moves by hand, with the nixpkgs attribute it must match);
+#   - the Dockerfile's base image, to the current digest of its tag;
+#   - the Go modules, to their latest versions (gokit, as the release tags it
+#     makes), with nix/package.nix's vendorHash recomputed to match.
+#
+# Sunday 21:23 UTC is the window every one of danielbodart's repos shares, two
+# hours before nix-config takes its own inputs at 23:23 on the same
+# nixos-26.05: so the package pushed to danielbodart.cachix.org here is the
+# derivation nix-config builds.
+#
+# The changes are committed straight to the default branch, no pull request,
+# named by what moved. A push with GITHUB_TOKEN starts no workflow, so when
+# something a release is built from moved (./run's RELEASE_PATHS), this
+# dispatches CI with `release`, which tests it again and publishes. A week in
+# which only flake.lock moved releases nothing: the images and binaries are
+# built by mise's Go, not the flake, so a release would be the same code under
+# a new version.
+name: Weekly update
+
+on:
+  schedule:
+    - cron: "23 21 * * 0"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: write
+
+# Shared with anything else that commits to the default branch.
+concurrency:
+  group: update
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    env:
+      BRANCH: ${{ github.ref_name }}
+    steps:
+      # The whole history and its tags, for the version and the release diff.
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      # Hosted runners have /dev/kvm, but not readable by the runner's user;
+      # without it the VM test falls back to emulation, many times slower.
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
+            | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      - uses: cachix/install-nix-action@v31
+
+      # Read from the cache, and push only the package at the end: never the
+      # VM test's closure, which would fill the free tier.
+      - uses: cachix/cachix-action@v17
+        with:
+          name: danielbodart
+          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
+          skipPush: true
+
+      - uses: jdx/mise-action@v5
+
+      - uses: docker/setup-buildx-action@v4
+
+      # Each step adds a line to moved.txt per thing that moved.
+      - name: Flake inputs
+        run: |
+          nix flake update 2>&1 | tee update.log
+          grep -oE "Updated input '[^']+'" update.log | cut -d"'" -f2 >> moved.txt || true
+
+      - name: mise tools
+        run: |
+          sed -n '/^\[tools\]/,/^\[/s/^\([A-Za-z0-9_-]*\) = "\([0-9][0-9.]*\)"$/\1 \2/p' mise.toml |
+            while read -r tool pinned; do
+              latest=$(mise latest "$tool@${pinned%.*}")
+              if [ -n "$latest" ] && [ "$latest" != "$pinned" ]; then
+                sed -i "s/^$tool = \"$pinned\"$/$tool = \"$latest\"/" mise.toml
+                echo "$tool $pinned -> $latest" >> moved.txt
+              fi
+            done
+          mise install
+
+      - name: Base image digests
+        run: |
+          grep -oE '[^ ]+:[^ @]+@sha256:[0-9a-f]{64}' Dockerfile | sort -u |
+            while IFS=@ read -r image pinned; do
+              latest=$(docker buildx imagetools inspect "$image" --format '{{json .Manifest}}' | jq -r .digest)
+              if [ "$latest" != "$pinned" ]; then
+                sed -i "s|$image@$pinned|$image@$latest|" Dockerfile
+                echo "$image" >> moved.txt
+              fi
+            done
+
+      # By mise's Go, the one just installed if it moved. GOTOOLCHAIN=local: a
+      # module that wants a newer Go than that fails here, rather than quietly
+      # moving go.mod past the flake's go_1_27.
+      - name: Go modules
+        env:
+          GOTOOLCHAIN: local
+        run: |
+          mise exec -- go get -u ./...
+          mise exec -- go mod tidy
+          git diff -U0 go.mod |
+            awk '/^\+[^+]/ { sub(/^\+(require)?[ \t]*/, ""); if ($1 != "" && $1 != "go" && $1 != "toolchain" && $1 != "(" && $1 != ")") print $1 }' >> moved.txt
+          if ! git diff --quiet go.sum; then
+            sed -i 's|vendorHash = "sha256-[^"]*";|vendorHash = lib.fakeHash;|' nix/package.nix
+            hash=$(nix build .#default 2>&1 | sed -n 's/^ *got: *\(sha256-[^ ]*\).*/\1/p' | head -1)
+            [ -n "$hash" ] || { echo "Nix reported no vendorHash"; exit 1; }
+            sed -i "s|vendorHash = lib.fakeHash;|vendorHash = \"$hash\";|" nix/package.nix
+          fi
+
+      - name: Anything moved?
+        id: moved
+        run: |
+          if [ -s moved.txt ]; then
+            echo "value=$(paste -sd, moved.txt | sed 's/,/, /g')" >> "$GITHUB_OUTPUT"
+          else
+            echo "Nothing moved."
+          fi
+
+      # Everything CI tests, in every channel, with everything that moved.
+      - name: Check
+        if: steps.moved.outputs.value
+        run: mise run check
+      - name: Flake check
+        if: steps.moved.outputs.value
+        run: nix flake check -L
+      - name: Dist
+        if: steps.moved.outputs.value
+        run: mise run dist
+      - name: Image
+        if: steps.moved.outputs.value
+        run: ./run smoke
+      - name: Tarball
+        if: steps.moved.outputs.value
+        run: ./run install-check
+
+      - name: Commit and push
+        if: steps.moved.outputs.value
+        env:
+          MOVED: ${{ steps.moved.outputs.value }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add flake.lock mise.toml Dockerfile go.mod go.sum nix/package.nix
+          git commit -qm "Weekly update: $MOVED"
+          git pull -q --rebase origin "$BRANCH"
+          git push -q origin "HEAD:$BRANCH"
+
+      - name: Push the package to Cachix
+        if: steps.moved.outputs.value
+        run: nix build .#default --print-out-paths | cachix push danielbodart
+
+      - name: Release
+        if: steps.moved.outputs.value
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if ./run release-due; then
+            gh workflow run ci.yml --ref "$BRANCH" -f release=true
+          fi
