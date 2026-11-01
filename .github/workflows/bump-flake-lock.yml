@@ -10,10 +10,9 @@
 # here and master keeps the lock it had. Only flake.lock is committed, named
 # by the inputs that moved.
 #
-# A push made with GITHUB_TOKEN starts no workflow, so docker.yml would
-# neither test nor publish the bumped commit. The last step dispatches it on
-# master, which publishes as a push does: a new version (the commit count
-# moved), its image on both registries, and its release.
+# Nothing is released for it: the images and binaries are built from the Go
+# toolchain, not the flake, so a release would be the same code under a new
+# version. The lock goes out with the next release a real change makes.
 name: Bump flake.lock
 
 on:
@@ -23,7 +22,6 @@ on:
 
 permissions:
   contents: write
-  actions: write
 
 # This is the only workflow that writes to master.
 concurrency:
@@ -81,9 +79,3 @@ jobs:
           git commit -qm "Bump flake.lock: $MOVED" flake.lock
           git pull -q --rebase origin master
           git push -q origin HEAD:master
-
-      - name: Test and publish the bumped master
-        if: steps.update.outputs.moved
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: gh workflow run docker.yml --ref master
