@@ -15,7 +15,7 @@
 #
 # The changes are committed straight to the default branch, no pull request,
 # named by what moved. A push with GITHUB_TOKEN starts no workflow, so when
-# something a release is built from moved (./run's RELEASE_PATHS), this
+# something a release is built from moved (RELEASE_PATHS in mise.toml), this
 # dispatches CI with `release`, which tests it again and publishes. A week in
 # which only flake.lock moved releases nothing: the images and binaries are
 # built by mise's Go, not the flake, so a release would be the same code under
@@ -34,6 +34,12 @@ permissions:
 # Shared with anything else that commits to the default branch.
 concurrency:
   group: update
+
+# bash, so GitHub runs every step with -eo pipefail: a command that fails on
+# the left of a pipe fails the step rather than handing on what it printed.
+defaults:
+  run:
+    shell: bash
 
 jobs:
   update:
@@ -92,6 +98,7 @@ jobs:
           grep -oE '[^ ]+:[^ @]+@sha256:[0-9a-f]{64}' Dockerfile | sort -u |
             while IFS=@ read -r image pinned; do
               latest=$(docker buildx imagetools inspect "$image" --format '{{json .Manifest}}' | jq -r .digest)
+              [[ $latest == sha256:* ]] || { echo "no digest for $image: '$latest'"; exit 1; }
               if [ "$latest" != "$pinned" ]; then
                 sed -i "s|$image@$pinned|$image@$latest|" Dockerfile
                 echo "$image" >> moved.txt
@@ -111,7 +118,9 @@ jobs:
             awk '/^\+[^+]/ { sub(/^\+(require)?[ \t]*/, ""); if ($1 != "" && $1 != "go" && $1 != "toolchain" && $1 != "(" && $1 != ")") print $1 }' >> moved.txt
           if ! git diff --quiet go.sum; then
             sed -i 's|vendorHash = "sha256-[^"]*";|vendorHash = lib.fakeHash;|' nix/package.nix
-            hash=$(nix build .#default 2>&1 | sed -n 's/^ *got: *\(sha256-[^ ]*\).*/\1/p' | head -1)
+            # The build fails, by design, so its status is ignored: what it
+            # reports is the point.
+            hash=$(nix build .#default 2>&1 | sed -n 's/^ *got: *\(sha256-[^ ]*\).*/\1/p' | head -1 || true)
             [ -n "$hash" ] || { echo "Nix reported no vendorHash"; exit 1; }
             sed -i "s|vendorHash = lib.fakeHash;|vendorHash = \"$hash\";|" nix/package.nix
           fi
@@ -163,6 +172,4 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          if ./run release-due; then
-            gh workflow run ci.yml --ref "$BRANCH" -f release=true
-          fi
+          if mise run release-due; then gh workflow run ci.yml --ref "$BRANCH" -f release=true; fi

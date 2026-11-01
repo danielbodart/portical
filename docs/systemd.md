@@ -127,7 +127,7 @@ standalone binary for each architecture and a unit file to run it:
 | `portical-linux-arm64` | The binary, for 64-bit ARM - a Pi 3/4/5 on 64-bit Raspberry Pi OS, or an ARM NAS. |
 | `portical-linux-armv7` | The binary, for 32-bit ARMv7 - a Pi 2 onwards on 32-bit Raspberry Pi OS, or an armhf NAS. |
 | `portical.service` | The unit file. |
-| `portical-linux-<arch>.tar.gz` | The binary and the unit file together, with the README and LICENSE. |
+| `portical-linux-x86_64.tar.gz`, `-aarch64.tar.gz`, `-armv7.tar.gz` | The binary and the unit file together, with the README and LICENSE, named as every one of danielbodart's tools names its tarballs. |
 | `SHA256SUMS` | Checksums of the above. |
 | `*.sigstore.json` | A cosign keyless signature of each of the above, by this repository's CI. |
 

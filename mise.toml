@@ -8,6 +8,13 @@ go = "1.27.3"
 # Signs the release assets, keyless, in CI.
 cosign = "3.0.6"
 
+# What a release is built from. A change to any of these since the last
+# release tag releases (mise run release-due, which CI and the weekly update
+# ask); anything else - docs, workflows, flake.nix, flake.lock and nix/ - goes
+# out with the next release one of these makes.
+[env]
+RELEASE_PATHS = "main.go internal go.mod go.sum mise.toml run Dockerfile systemd"
+
 [tasks.lint]
 description = "gofmt and go vet"
 run = "./run lint"
@@ -20,6 +27,10 @@ run = "./run test"
 description = "Lint and unit tests: the dev loop, and CI's fast job"
 depends = ["lint", "test"]
 
+# build and dist declare no sources to skip on: the version they stamp in is
+# the commit count and the CI run number (or the time), which change when no
+# source does, so a skipped run would ship an old version. Go's own build
+# cache is what makes a rerun cheap.
 [tasks.build]
 description = "A static binary for this machine, into dist/"
 run = "./run build"
@@ -27,3 +38,7 @@ run = "./run build"
 [tasks.dist]
 description = "Every architecture's binary and tarball, the units and SHA256SUMS, into dist/"
 run = "./run dist"
+
+[tasks.release-due]
+description = "Succeed if anything in RELEASE_PATHS changed since the last release tag, or there is none; fail otherwise"
+run = "./run release-due"

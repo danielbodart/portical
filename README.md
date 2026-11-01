@@ -182,31 +182,34 @@ of which are in v2, and to [@jhenkens](https://github.com/jhenkens), whose
 
 ## Channels
 
-Portical ships through two channels, each built the way its consumers expect:
-
-- **Upstream** - the Docker image (`danielbodart/portical` and
-  `ghcr.io/danielbodart/portical`, for amd64, arm64 and armv7) and the
-  [GitHub releases](https://github.com/danielbodart/portical/releases): a static
-  binary and a tarball (binary, systemd unit, README, LICENSE) per architecture,
-  `SHA256SUMS`, and a cosign keyless signature of each
-  (`cosign verify-blob --bundle <asset>.sigstore.json --certificate-identity-regexp
+- **Docker**: `docker run danielbodart/portical` (or
+  `ghcr.io/danielbodart/portical`), for amd64, arm64 and armv7 - image `FROM
+  scratch` + the binary `mise run dist` builds, with the CA bundle (and v1's
+  `/opt/portical/run` symlink) from a digest-pinned Alpine.
+- **Tarball + systemd**: `portical-linux-x86_64.tar.gz`, `-aarch64.tar.gz` and
+  `-armv7.tar.gz` on each [GitHub
+  release](https://github.com/danielbodart/portical/releases), each the
+  binary, `portical.service`, README and LICENSE: unpack, install the binary
+  as `/usr/local/bin/portical` and the unit into `/etc/systemd/system`
+  ([docs/systemd.md](docs/systemd.md)). The release also carries each plain
+  binary under the names the first releases gave them (`portical-linux-x64`,
+  `-arm64`, `-armv7`, which `releases/latest/download` links point at), the
+  unit, `SHA256SUMS`, and a cosign keyless signature of each asset (`cosign
+  verify-blob --bundle <asset>.sigstore.json --certificate-identity-regexp
   '^https://github.com/danielbodart/portical/' --certificate-oidc-issuer
-  https://token.actions.githubusercontent.com <asset>`). Built by
-  [mise](https://mise.jdx.dev) with the Go `mise.toml` pins (`mise run dist`);
-  the image is that binary in an empty image. Consume it with `docker run
-  danielbodart/portical`, or the tarball and its unit as in
-  [docs/systemd.md](docs/systemd.md).
-- **Distro** - the flake's `packages.default` and `nixosModules.default`, built
-  by nixpkgs (nixos-26.05, `go_1_27`) and cached at `danielbodart.cachix.org`.
-  Consume it as a flake input with `inputs.nixpkgs.follows`, and
-  `services.portical`.
+  https://token.actions.githubusercontent.com <asset>`).
+- **Nix**: flake input `github:danielbodart/portical/v<version>` with
+  `inputs.nixpkgs.follows = "nixpkgs"`; `packages.default`, and
+  `nixosModules.default` (`services.portical`). Built by nixpkgs (nixos-26.05,
+  `go_1_27`) and cached at `danielbodart.cachix.org`.
 
-A release is made when something it is built from changes (`RELEASE_PATHS` in
-`./run`), and only once every channel's tests pass: `mise run check`, the flake
-check with its NixOS VM test, the image run, and the tarball installed under
-systemd. Every dependency - the flake's inputs, mise's tools to their latest
-patch, the base image's digest and the Go modules - moves once a week, on
-Sunday at 21:23 UTC, committed straight to `master` when all of that passes.
+Updated weekly (Sunday 21:23 UTC): the flake's inputs, mise's tools to the
+latest patch of their minor, the base image's digest and the Go modules,
+committed straight to `master` once every channel's tests pass. A release is
+cut when the Go source, `go.mod`/`go.sum`, `mise.toml`, `./run`, the
+`Dockerfile` or the unit changed since the last release (`RELEASE_PATHS` in
+`mise.toml`), and only once `mise run check`, the flake check with its NixOS
+VM test, the image run and the tarball installed under systemd pass.
 
 ## Development
 

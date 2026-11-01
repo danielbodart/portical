@@ -1,7 +1,8 @@
 #!/bin/sh
 # The one place Portical's build is defined, so CI runs the same commands a
-# developer does. mise.toml's tasks (check, build, dist) call it; CI's gates
-# call the rest: ./run <version|lint|test|check|build|dist|smoke|install-check|release-due|image>.
+# developer does. mise.toml's tasks (check, build, dist, release-due) call it;
+# CI's gates call the rest:
+# ./run <version|lint|test|check|build|dist|smoke|install-check|release-due|image>.
 set -eu
 
 cd "$(dirname "$0")"
@@ -18,10 +19,6 @@ ARCHES="amd64 arm64 armv7"
 # The plain units shipped beside the binary.
 UNITS="systemd/portical.service"
 
-# What a release is built from. A change to any of these since the last release
-# tag releases; anything else - docs, workflows, the flake and its lock - goes
-# out with the next release one of these makes.
-RELEASE_PATHS="main.go internal go.mod go.sum mise.toml run Dockerfile systemd"
 
 die() {
   echo "Error: $*" >&2
@@ -95,6 +92,17 @@ asset_arch() {
   esac
 }
 
+# The tarballs' name for each architecture, the one every tool of
+# danielbodart's uses for its tarballs (x86_64, aarch64, armv7). The tarballs
+# came after the binaries, so no older link holds them to the binaries' names.
+tarball_arch() {
+  case $1 in
+    amd64) echo x86_64 ;;
+    arm64) echo aarch64 ;;
+    *) echo "$1" ;;
+  esac
+}
+
 build() {
   outfile=${1:-dist/$NAME}
   v=$(version)
@@ -116,14 +124,14 @@ dist() {
   mkdir -p dist/release
   for arch in $ARCHES; do
     compile "$v" "$(goarch "$arch")" "dist/linux-$arch/$NAME"
-    asset=$NAME-linux-$(asset_arch "$arch")
-    cp "dist/linux-$arch/$NAME" "dist/release/$asset"
-    stage=dist/stage/$asset/$NAME-$v
+    cp "dist/linux-$arch/$NAME" "dist/release/$NAME-linux-$(asset_arch "$arch")"
+    tarball=$NAME-linux-$(tarball_arch "$arch")
+    stage=dist/stage/$tarball/$NAME-$v
     mkdir -p "$stage"
     # shellcheck disable=SC2086 # $UNITS is a list of plain paths
     cp "dist/linux-$arch/$NAME" $UNITS README.md LICENSE "$stage/"
-    tar -C "dist/stage/$asset" --sort=name --owner=0 --group=0 --numeric-owner \
-      -czf "dist/release/$asset.tar.gz" "$NAME-$v"
+    tar -C "dist/stage/$tarball" --sort=name --owner=0 --group=0 --numeric-owner \
+      -czf "dist/release/$tarball.tar.gz" "$NAME-$v"
   done
   rm -rf dist/stage
   # shellcheck disable=SC2086 # $UNITS is a list of plain paths
@@ -143,12 +151,12 @@ smoke() {
   echo "image says $said"
 }
 
-# The x64 tarball installed as its README says, the binary where the units
+# The x86_64 tarball installed as its README says, the binary where the units
 # expect it, and the units checked against a real systemd. Needs sudo.
 install_check() {
   v=$(cat dist/version)
   root=$(mktemp -d)
-  tar -C "$root" -xzf "dist/release/$NAME-linux-x64.tar.gz"
+  tar -C "$root" -xzf "dist/release/$NAME-linux-x86_64.tar.gz"
   dir=$root/$NAME-$v
   sudo install -m 755 "$dir/$NAME" "/usr/local/bin/$NAME"
   said=$("/usr/local/bin/$NAME" --version)
@@ -166,8 +174,10 @@ install_check() {
 }
 
 # Succeeds when a file in RELEASE_PATHS changed since the last release tag, or
-# there is none yet.
+# there is none yet. RELEASE_PATHS is mise.toml's, so this runs as
+# `mise run release-due`.
 release_due() {
+  : "${RELEASE_PATHS:?is set by mise.toml: run this as mise run release-due}"
   last=$(git describe --tags --abbrev=0 --match 'v*' HEAD 2>/dev/null) || {
     echo "no release yet" >&2
     return 0
