@@ -1,9 +1,9 @@
 {
   description = "UPnP port forwarding for Docker containers and systemd units";
 
-  # Unstable for buildGo127Module, the Go that go.mod asks for and mise.toml
-  # pins - the stable branch has no Go 1.27 yet.
-  inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+  # The release nix-config builds every host from, which has go_1_27, the Go
+  # that go.mod asks for and mise.toml pins.
+  inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-26.05";
 
   outputs =
     { self, nixpkgs }:
@@ -15,11 +15,12 @@
       ];
       forAllSystems = f: lib.genAttrs systems (system: f nixpkgs.legacyPackages.${system});
 
-      # The same scheme as ./run: the committed major, the commit count, and
-      # the commit's date in place of a CI run number. A dirty tree has no
-      # count, and says 0.
-      major = lib.fileContents ./MAJOR;
-      version = "${major}.${toString (self.revCount or 0)}.${self.lastModifiedDate or "0"}";
+      # nixpkgs' convention for a build from a commit rather than a release:
+      # the commit's date, so it never claims to be one of ./run's versions,
+      # and it is the same however the flake was fetched (a github: input has
+      # no commit count).
+      date = self.lastModifiedDate or "19700101";
+      version = "0-unstable-${builtins.substring 0 4 date}-${builtins.substring 4 2 date}-${builtins.substring 6 2 date}";
 
       src = lib.fileset.toSource {
         root = ./.;

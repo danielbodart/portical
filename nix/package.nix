@@ -1,17 +1,18 @@
 {
   lib,
-  buildGo127Module,
+  buildGoModule,
+  go_1_27,
   version,
   src,
 }:
 
 # The same static build as ./run, by nixpkgs' Go, and the check phase runs the
-# tests on the way. buildGo127Module rather than buildGoModule, which is still
-# Go 1.26 in the pinned nixpkgs and would refuse go.mod's `go 1.27`.
+# tests on the way. With go_1_27, the major.minor mise.toml pins, rather than
+# nixpkgs' default Go, which is 1.26 and would refuse go.mod's `go 1.27`.
 #
 # Nothing goes on PATH any more: the systemd source's `published` asks the
 # kernel for listening sockets over netlink itself, where it used to run ss.
-buildGo127Module {
+(buildGoModule.override { go = go_1_27; }) {
   pname = "portical";
   inherit version src;
 
