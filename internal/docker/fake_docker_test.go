@@ -45,7 +45,9 @@ type fakeDocker struct {
 	// Open event streams, each closed to drop it.
 	streams map[int]chan struct{}
 	opened  int
-	mux     *http.ServeMux
+	// The Engine API versions this Docker speaks, in front of mux.
+	api *versioned
+	mux *http.ServeMux
 }
 
 // relayCall is one helper container Portical asked for.
@@ -72,24 +74,25 @@ type event struct {
 func newFakeDocker() *fakeDocker {
 	f := &fakeDocker{images: map[string]string{}, helpers: map[string]*helper{}, wake: make(chan struct{}, 1), streams: map[int]chan struct{}{}}
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /v1.41/containers/json", f.list)
-	mux.HandleFunc("GET /v1.41/networks", f.networks)
-	mux.HandleFunc("GET /v1.41/events", f.events)
-	mux.HandleFunc("POST /v1.41/containers/create", f.create)
-	mux.HandleFunc("POST /v1.41/containers/{id}/start", f.start)
-	mux.HandleFunc("GET /v1.41/containers/{id}/logs", f.logs)
-	mux.HandleFunc("POST /v1.41/containers/{id}/wait", f.wait)
-	mux.HandleFunc("DELETE /v1.41/containers/{id}", f.remove)
-	mux.HandleFunc("GET /v1.41/containers/{id}/json", f.inspect)
+	mux.HandleFunc("GET /{version}/containers/json", f.list)
+	mux.HandleFunc("GET /{version}/networks", f.networks)
+	mux.HandleFunc("GET /{version}/events", f.events)
+	mux.HandleFunc("POST /{version}/containers/create", f.create)
+	mux.HandleFunc("POST /{version}/containers/{id}/start", f.start)
+	mux.HandleFunc("GET /{version}/containers/{id}/logs", f.logs)
+	mux.HandleFunc("POST /{version}/containers/{id}/wait", f.wait)
+	mux.HandleFunc("DELETE /{version}/containers/{id}", f.remove)
+	mux.HandleFunc("GET /{version}/containers/{id}/json", f.inspect)
 	f.mux = mux
+	f.api = &versioned{oldest: "1.24", newest: NewestAPI, next: mux}
 	return f
 }
 
-func (f *fakeDocker) ServeHTTP(w http.ResponseWriter, r *http.Request) { f.mux.ServeHTTP(w, r) }
+func (f *fakeDocker) ServeHTTP(w http.ResponseWriter, r *http.Request) { f.api.ServeHTTP(w, r) }
 
 // client is a Client talking to this Docker.
 func (f *fakeDocker) client() *Client {
-	return NewClient(httpx.StreamingHandlerTransport(f))
+	return NewClient(httpx.StreamingHandlerTransport(f), nil)
 }
 
 // given replaces what is running, without saying so on the event stream.

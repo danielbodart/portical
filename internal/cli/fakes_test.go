@@ -117,7 +117,12 @@ func (f *fakeDocker) open() int {
 }
 
 func (f *fakeDocker) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	path := strings.TrimPrefix(r.URL.Path, "/"+docker.API)
+	if r.URL.Path == "/version" {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]string{"ApiVersion": docker.NewestAPI, "MinAPIVersion": "1.24"})
+		return
+	}
+	path := strings.TrimPrefix(r.URL.Path, "/v"+docker.NewestAPI)
 	f.mu.Lock()
 	f.requests = append(f.requests, r.Method+" "+path)
 	f.mu.Unlock()

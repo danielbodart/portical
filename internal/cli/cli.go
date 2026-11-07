@@ -105,7 +105,7 @@ func run(ctx context.Context, c *Container, config Config) error {
 		switch name {
 		case "docker":
 			c.Log.Log("Talking to Docker at " + config.Socket)
-			client := docker.NewClient(c.Docker(config.Socket))
+			client := docker.NewClient(c.Docker(config.Socket), c.Log)
 			sources = append(sources, docker.NewSource(client, docker.Options{
 				Label: config.Label, NetworkLabel: config.NetworkLabel, HostAddress: options.HostAddress,
 			}))

@@ -135,7 +135,7 @@ func TestContainersSaysWhichCallFailedAndWhy(t *testing.T) {
 	_, err := docker.client().Containers(ctx, ForwardLabel)
 
 	if err == nil ||
-		!strings.Contains(err.Error(), "Docker API /v1.41/containers/json failed") ||
+		!strings.Contains(err.Error(), "Docker API /v"+NewestAPI+"/containers/json failed") ||
 		!strings.Contains(err.Error(), "Cannot connect to the Docker daemon") {
 		t.Errorf("got %v", err)
 	}
@@ -243,9 +243,9 @@ func TestEventsReturnsWhenDockerDropsTheStream(t *testing.T) {
 func TestEventsFailsWhenTheStreamCannotBeOpened(t *testing.T) {
 	broken := NewClient(httpx.RoundTripperFunc(func(*http.Request) (*http.Response, error) {
 		return nil, errors.New("dial unix /var/run/docker.sock: connect: no such file or directory")
-	}))
+	}), nil)
 	err := broken.Events(ctx, ForwardLabel, func(Event) { t.Error("notified") })
-	if err == nil || !strings.Contains(err.Error(), "Docker API /v1.41/events failed") {
+	if err == nil || !strings.Contains(err.Error(), "Docker API /v"+NewestAPI+"/events failed") {
 		t.Errorf("got %v", err)
 	}
 }
@@ -361,7 +361,7 @@ func TestEventsStreamOverAUnixSocket(t *testing.T) {
 	go server.Serve(listener)
 	defer server.Close()
 	docker.given(container("nginx", map[string]string{ForwardLabel: "80"}))
-	client := NewClient(httpx.UnixSocket(path))
+	client := NewClient(httpx.UnixSocket(path), nil)
 
 	if found, err := client.Containers(ctx, ForwardLabel); err != nil || len(found) != 1 {
 		t.Fatalf("got %+v, %v", found, err)

@@ -15,15 +15,13 @@ import (
 	"net/url"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/danielbodart/gokit/httpx"
+	"github.com/danielbodart/gokit/logx"
 	"github.com/danielbodart/portical/internal/model"
 )
-
-// API is the Engine API version spoken. 1.41 ships with Docker 20.10, old
-// enough to be safe.
-const API = "v1.41"
 
 // RequestTimeout bounds every Engine API call that is meant to come straight
 // back.
@@ -72,14 +70,28 @@ type Event struct {
 //
 // It takes an http.RoundTripper rather than a socket path, so the tests hand
 // it an in-memory Docker and it cannot tell the difference.
+//
+// It speaks whichever Engine API version the daemon offers, up to NewestAPI,
+// rather than one fixed version: Docker drops old versions as it moves on
+// (Docker 29.0 refused anything before v1.44), and a version pinned here would
+// have to chase it.
 type Client struct {
 	http *http.Client
+	log  logx.Logger
+
+	mu sync.Mutex
+	// The negotiated version, or "" until the next call negotiates one.
+	version string
 }
 
 // NewClient is a client for the Engine API reached through transport -
-// httpx.UnixSocket for a real Docker.
-func NewClient(transport http.RoundTripper) *Client {
-	return &Client{http: &http.Client{Transport: transport}}
+// httpx.UnixSocket for a real Docker - saying on log which version it speaks
+// and why. A nil log says nothing.
+func NewClient(transport http.RoundTripper, log logx.Logger) *Client {
+	if log == nil {
+		log = logx.Discard
+	}
+	return &Client{http: &http.Client{Transport: transport}, log: log}
 }
 
 // Containers is every running container carrying label.
@@ -140,7 +152,7 @@ func (c *Client) Events(ctx context.Context, label string, notify func(Event)) e
 			if ctx.Err() != nil || errors.Is(err, io.EOF) {
 				return nil
 			}
-			return fmt.Errorf("Docker API /%s/events failed: %w", API, err)
+			return failed(response, err)
 		}
 		notify(Event{Action: raw.Action, Container: cmp.Or(raw.Actor.Attributes["name"], raw.ID, raw.Actor.ID)})
 	}
@@ -199,7 +211,7 @@ func (c *Client) RunInNetworkOf(ctx context.Context, container, image string, co
 	logs, err := io.ReadAll(response.Body)
 	response.Body.Close()
 	if err != nil {
-		return "", fmt.Errorf("Docker API /%s/containers/%s/logs failed: %w", API, created.ID, err)
+		return "", failed(response, err)
 	}
 	output := string(logs)
 
@@ -225,16 +237,40 @@ func (c *Client) ImageOf(ctx context.Context, container string) (string, error) 
 
 // do makes one request and checks its status. ctx alone bounds it, so the
 // caller decides whether it is the kind that comes straight back.
+//
+// A request Docker refuses for its version - the daemon upgraded or
+// downgraded since the version was negotiated - is asked once more in a
+// freshly negotiated one.
 func (c *Client) do(ctx context.Context, method, path string, query url.Values, body any) (*http.Response, error) {
-	target := "/" + API + path
+	var data []byte
+	if body != nil {
+		var err error
+		if data, err = json.Marshal(body); err != nil {
+			return nil, fmt.Errorf("Docker API %s failed: %w", path, err)
+		}
+	}
+	version, err := c.apiVersion(ctx)
+	if err != nil {
+		return nil, err
+	}
+	response, err := c.send(ctx, version, method, path, query, data)
+	if versionRefused(err) {
+		c.forget(version)
+		if version, err = c.apiVersion(ctx); err != nil {
+			return nil, err
+		}
+		response, err = c.send(ctx, version, method, path, query, data)
+	}
+	return response, err
+}
+
+// send is one request in version.
+func (c *Client) send(ctx context.Context, version, method, path string, query url.Values, data []byte) (*http.Response, error) {
+	target := "/v" + version + path
 	fail := func(err error) error { return fmt.Errorf("Docker API %s failed: %w", target, err) }
 
 	var reader io.Reader
-	if body != nil {
-		data, err := json.Marshal(body)
-		if err != nil {
-			return nil, fail(err)
-		}
+	if data != nil {
 		reader = bytes.NewReader(data)
 	}
 	// The host is a placeholder: the transport decides where this goes.
@@ -243,7 +279,7 @@ func (c *Client) do(ctx context.Context, method, path string, query url.Values, 
 	if err != nil {
 		return nil, fail(err)
 	}
-	if body != nil {
+	if data != nil {
 		request.Header.Set("Content-Type", "application/json")
 	}
 	response, err := c.http.Do(request)
@@ -253,7 +289,16 @@ func (c *Client) do(ctx context.Context, method, path string, query url.Values, 
 	if err := httpx.Check(response); err != nil {
 		return nil, fail(err)
 	}
+	// Kept for failed, which names the call a body that will not read
+	// belonged to, version and all.
+	response.Request = request
 	return response, nil
+}
+
+// failed is a response's body failing to read, said the way do says a
+// failed call.
+func failed(response *http.Response, err error) error {
+	return fmt.Errorf("Docker API %s failed: %w", response.Request.URL.Path, err)
 }
 
 // getJSON is a request that comes straight back, read into into.
@@ -282,7 +327,7 @@ func (c *Client) quick(ctx context.Context, method, path string, query url.Value
 		return nil
 	}
 	if err := json.NewDecoder(response.Body).Decode(into); err != nil {
-		return fmt.Errorf("Docker API /%s%s failed: %w", API, path, err)
+		return failed(response, err)
 	}
 	return nil
 }
