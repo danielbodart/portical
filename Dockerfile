@@ -6,7 +6,7 @@
 # digest so a rebuild cannot change it with no commit to say so; the weekly
 # update moves the digest. Its stage runs on the build platform whatever the
 # target, since nothing taken from it depends on the architecture.
-FROM --platform=$BUILDPLATFORM alpine:3.24@sha256:be2656061b536c1883c4034790e21d0a09c5aaaf51968b89368a3c0371ea2c9a AS base
+FROM --platform=$BUILDPLATFORM alpine:3.24@sha256:f59abe656b692d901e184be3445e084786602108599d2a51d229c0f5a48c71bf AS base
 
 # v1 was a shell script at this path, and its README told people to write
 # `command: "/opt/portical/run poll"`. Those compose files are still running.
