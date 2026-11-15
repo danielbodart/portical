@@ -1,7 +1,7 @@
 # services.portical, and `portical.forward` on every systemd service.
 #
 # Takes the flake's own packages, so a configuration that imports
-# nixosModules.default runs the Portical it was built from by default.
+# nixosModules.default from a release tag runs that release by default.
 { packages }:
 {
   config,
@@ -89,8 +89,14 @@ in
 
     package = mkOption {
       type = types.package;
-      default = packages.${pkgs.stdenv.hostPlatform.system}.default;
-      defaultText = lib.literalMD "this flake's package";
+      # The release's binary, which only a release tag's flake has
+      # (flake.nix): from master, there is none to default to.
+      default =
+        packages.${pkgs.stdenv.hostPlatform.system}.default or (throw ''
+          services.portical.package: this flake has no package for ${pkgs.stdenv.hostPlatform.system}.
+          Pin a release, github:danielbodart/portical/v<version>, or set the package.
+        '');
+      defaultText = lib.literalMD "this flake's package: the release's binary";
       description = "The Portical to run.";
     };
 

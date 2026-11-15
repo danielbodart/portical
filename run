@@ -2,7 +2,8 @@
 # The one place Portical's build is defined, so CI runs the same commands a
 # developer does. mise.toml's tasks (check, build, dist, release-due) call it;
 # CI's gates call the rest:
-# ./run <version|lint|test|check|build|dist|smoke|install-check|release-due|image>.
+# ./run <version|lint|test|check|selftest|build|dist|smoke|install-check|
+#        release-due|last-release|release-json|nix-local-release|image>.
 set -eu
 
 cd "$(dirname "$0")"
@@ -61,6 +62,7 @@ test() {
 
 check() {
   lint
+  selftest
   test "$@"
 }
 
@@ -173,22 +175,158 @@ install_check() {
   echo "installed and verified $NAME-$v"
 }
 
-# Succeeds when a file in RELEASE_PATHS changed since the last release tag, or
+# The last release before HEAD: prints its tag and the commit it released,
+# "v<V> COMMIT", or nothing, failing, if there is none. release-due diffs from
+# COMMIT, and CI's release notes list the commits since it.
+#
+# A release's tag is not on master. Since nix/release.json (flake.nix), it
+# names a commit of its own, on no branch, whose parent is the released
+# master commit and which adds only that file (ci.yml's release job says
+# why), so `git describe`, which looks for tags among HEAD's ancestors, finds
+# none. The released commit is the tag's parent; the tags made before that
+# name the master commit itself, and count too. Of the tags whose released
+# commit is HEAD or one of its ancestors, the newest by version is the last:
+# the minor is the commit count, so it orders them along master.
+last_release() {
+  git tag --list 'v[0-9]*' --sort=-v:refname | {
+    while read -r tag; do
+      for c in "$tag^{commit}" "$tag^{commit}^"; do
+        commit=$(git rev-parse -q --verify "$c" 2>/dev/null) || continue
+        if git merge-base --is-ancestor "$commit" HEAD; then
+          echo "$tag $commit"
+          exit 0
+        fi
+      done
+    done
+    exit 1
+  }
+}
+
+# Succeeds when a file in RELEASE_PATHS changed since the last release, or
 # there is none yet. RELEASE_PATHS is mise.toml's, so this runs as
-# `mise run release-due`.
+# `mise run release-due`. The diff is from the commit the last release was
+# made from, not its tag's own commit, which adds nix/release.json: that is
+# the release's output, not its input.
 release_due() {
   : "${RELEASE_PATHS:?is set by mise.toml: run this as mise run release-due}"
-  last=$(git describe --tags --abbrev=0 --match 'v*' HEAD 2>/dev/null) || {
+  last=$(last_release) || {
     echo "no release yet" >&2
     return 0
   }
+  tag=${last% *}
+  commit=${last#* }
   # shellcheck disable=SC2086 # $RELEASE_PATHS is a list of plain paths
-  changed=$(git diff --name-only "$last" HEAD -- $RELEASE_PATHS)
+  changed=$(git diff --name-only "$commit" HEAD -- $RELEASE_PATHS)
   [ -n "$changed" ] || {
-    echo "nothing released has changed since $last" >&2
+    echo "nothing released has changed since $tag" >&2
     return 1
   }
-  echo "changed since $last:" "$changed" >&2
+  echo "changed since $tag:" "$changed" >&2
+}
+
+# Each Nix system flake.nix packages, and the release binary that serves it:
+# the plain binaries, under the names the first releases gave them.
+NIX_ASSETS="x86_64-linux:portical-linux-x64 aarch64-linux:portical-linux-arm64 armv7l-linux:portical-linux-armv7"
+
+# A hex SHA-256 in the SRI form fetchurl takes, sha256-<base64 of the 32
+# bytes>, without nix, which the release job has none of.
+sri() {
+  printf 'sha256-%s' "$(printf '%s' "$1" | tr a-f A-F | basenc --base16 -d | base64 -w0)"
+}
+
+# nix/release.json for a release, on stdout: its version, and for each Nix
+# system the URL of its binary and the binary's hash. flake.nix's package is
+# that binary fetched, not a build from source, so a flake pinned at
+# github:danielbodart/portical/v<V> runs the very binary the release carries,
+# saying it is V. Every binary must be in SHA256SUMS exactly once.
+#
+#   ./run release-json [VERSION SHA256SUMS]   (default: dist/'s)
+release_json() {
+  v=${1:-$(cat dist/version)}
+  sums=${2:-dist/release/SHA256SUMS}
+  echo "$v" | grep -Eqx '[0-9]+\.[0-9]+\.[0-9]+' || die "release-json: '$v' is not MAJOR.MINOR.PATCH"
+  printf '{\n  "version": "%s",\n  "assets": {\n' "$v"
+  n=0
+  total=$(echo "$NIX_ASSETS" | wc -w)
+  for pair in $NIX_ASSETS; do
+    system=${pair%%:*}
+    asset=${pair#*:}
+    hex=$(awk -v n="$asset" '$2 == n || $2 == "*" n { print $1 }' "$sums")
+    echo "$hex" | grep -Eqx '[0-9a-f]{64}' || die "release-json: want one sha256 for $asset in $sums, found '$hex'"
+    n=$((n + 1))
+    sep=,
+    [ "$n" -lt "$total" ] || sep=
+    printf '    "%s": {\n      "url": "https://github.com/danielbodart/%s/releases/download/v%s/%s",\n      "hash": "%s"\n    }%s\n' \
+      "$system" "$NAME" "$v" "$asset" "$(sri "$hex")" "$sep"
+  done
+  printf '  }\n}\n'
+}
+
+# Makes this checkout's flake a release of dist/'s binaries, publishing
+# nothing: writes nix/release.json for them, stages it (a flake in a git
+# checkout sees only what git tracks), and adds each binary to the Nix store
+# at the very path fetchurl would fetch it to, so the package is built from
+# these files and nothing is downloaded. The path is content-addressed:
+# fixed by the name (the asset's) and the hash (release.json's), which
+# nix-store --add-fixed computes from the file, so only the file release.json
+# names can stand in for the download.
+#
+# CI's nix job does this with the dist its own run built, so the VM test runs
+# the binary the run will release, through the same release.json, fetchurl
+# and install as a pinned tag. The release.json it leaves staged must never
+# be committed to master (ci.yml's release job says why).
+nix_local_release() {
+  mkdir -p nix
+  release_json > nix/release.json
+  git add nix/release.json
+  for pair in $NIX_ASSETS; do
+    nix-store --add-fixed sha256 "dist/release/${pair#*:}" > /dev/null
+  done
+  cat nix/release.json
+}
+
+# release-json against v2.104.5's real SHA256SUMS: the file flake.nix reads,
+# each hash as `nix hash convert --hash-algo sha256 --to sri` gives it
+# (worked out with it once and written here, since check runs where there may
+# be no nix); and a SHA256SUMS missing a binary, or a version that is not
+# one, makes nothing. Run by mise run check.
+selftest() {
+  work=$(mktemp -d)
+  trap 'rm -rf "$work"' EXIT
+  cat > "$work/SHA256SUMS" <<'SUMS'
+b19ee4cd792f3b4b6616b8552908de8ffb387597eb050e3ecdb2ee74e670f8c0  portical-linux-aarch64.tar.gz
+6942530062b859e7f71466498314ecfcbd0528f3d6f4f80f663331aa038733d9  portical-linux-arm64
+0331d381f62ef3856ba1e32f37137f1cb116e5d0baa6a33c0fb85531b85dc09b  portical-linux-armv7
+67d64e5c0ae321e402b45bafb0a174f8d6027f9b4aa42cd8a536d0856832b2af  portical-linux-armv7.tar.gz
+c9b315378a307f247f3bfe5ef5d2bdb30c7a04c8518a96eaa956b3365f57ee72  portical-linux-x64
+342f6bb1a996755a941bc5867020ed20521a8d99820ee0485f6bab82e3abbba6  portical-linux-x86_64.tar.gz
+25c322b4928a9db59832c9416a69fe2e567ba29e1bf64d1b8ed9574f6b168b27  portical.service
+SUMS
+  cat > "$work/want.json" <<'JSON'
+{
+  "version": "2.104.5",
+  "assets": {
+    "x86_64-linux": {
+      "url": "https://github.com/danielbodart/portical/releases/download/v2.104.5/portical-linux-x64",
+      "hash": "sha256-ybMVN4owfyR/O/5e9dK9swx6BMhRipbqqVazNl9X7nI="
+    },
+    "aarch64-linux": {
+      "url": "https://github.com/danielbodart/portical/releases/download/v2.104.5/portical-linux-arm64",
+      "hash": "sha256-aUJTAGK4Wef3FGZJgxTs/L0FKPPW9PgPZjMxqgOHM9k="
+    },
+    "armv7l-linux": {
+      "url": "https://github.com/danielbodart/portical/releases/download/v2.104.5/portical-linux-armv7",
+      "hash": "sha256-AzHTgfYu84VroeMvNxN/HLEW5dC6pqM8D7hVMbhdwJs="
+    }
+  }
+}
+JSON
+  (release_json 2.104.5 "$work/SHA256SUMS") > "$work/got.json" || die "release-json refused a release's SHA256SUMS"
+  diff -u "$work/want.json" "$work/got.json" || die "release-json: not the release.json flake.nix wants"
+  grep -v 'linux-arm64$' "$work/SHA256SUMS" > "$work/short"
+  ! (release_json 2.104.5 "$work/short") > /dev/null 2>&1 || die "release-json accepted a SHA256SUMS without linux-arm64"
+  ! (release_json v2.104.5 "$work/SHA256SUMS") > /dev/null 2>&1 || die "release-json accepted a version with a v"
+  echo "selftest: ok"
 }
 
 # The same image CI publishes, for every architecture, from dist/.
@@ -200,11 +338,14 @@ image() {
 command=${1:-build}
 [ $# -gt 0 ] && shift
 case $command in
-  version|lint|test|check|build|dist|smoke|image) "$command" "$@" ;;
+  version|lint|test|check|selftest|build|dist|smoke|image) "$command" "$@" ;;
   install-check) install_check ;;
   release-due) release_due ;;
+  last-release) last_release ;;
+  release-json) release_json "$@" ;;
+  nix-local-release) nix_local_release ;;
   *)
-    echo "Error: '$command' is not a command. Try: version, lint, test, check, build, dist, smoke, install-check, release-due, image" >&2
+    echo "Error: '$command' is not a command. Try: version, lint, test, check, selftest, build, dist, smoke, install-check, release-due, last-release, release-json, nix-local-release, image" >&2
     exit 2
     ;;
 esac

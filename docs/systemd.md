@@ -19,11 +19,14 @@ services are all in Docker, [running Portical in Docker](docker.md) is simpler.
 ## NixOS
 
 The repository is a flake with a package and a NixOS module. Importing the
-module, enabling it and listing each service's forwards is all there is to it:
+module, enabling it and listing each service's forwards is all there is to it.
+Pin a release: its tag's flake has the package, which is that release's own
+binary, and `master`'s has none.
 
 ```nix
 # flake.nix
-inputs.portical.url = "github:danielbodart/portical";
+inputs.portical.url = "github:danielbodart/portical/v<version>";
+inputs.portical.inputs.nixpkgs.follows = "nixpkgs";
 
 # configuration.nix, with inputs.portical.nixosModules.default imported
 services.portical = {

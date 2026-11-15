@@ -1,15 +1,14 @@
-# The upstream channel's toolchain - the Docker image and the release binaries
-# and tarballs - and the dev loop's. Go's major.minor is the flake's go_1_27
-# from nixos-26.05, so both channels build with the same language version; the
-# weekly update moves each tool to the latest patch of its minor, and a new
-# minor moves here and in nix/package.nix together, by hand.
+# The toolchain of every channel - the Docker image, the release binaries and
+# tarballs, and the flake, whose package is the release's own binary - and the
+# dev loop's. The weekly update moves each tool to the latest patch of its
+# minor; a new minor moves here by hand.
 [tools]
 go = "1.27.3"
 # Signs the release assets, keyless, in CI.
 cosign = "3.0.6"
 
 # What a release is built from. A change to any of these since the last
-# release tag releases (mise run release-due, which CI and the weekly update
+# release (./run last-release: the commit its tag's parent is) releases (mise run release-due, which CI and the weekly update
 # ask); anything else - docs, workflows, flake.nix, flake.lock and nix/ - goes
 # out with the next release one of these makes.
 [env]
@@ -23,9 +22,13 @@ run = "./run lint"
 description = "Unit tests"
 run = "./run test"
 
+[tasks.selftest]
+description = "./run's own tests: the nix/release.json a release's SHA256SUMS makes"
+run = "./run selftest"
+
 [tasks.check]
-description = "Lint and unit tests: the dev loop, and CI's fast job"
-depends = ["lint", "test"]
+description = "Lint, ./run's own tests and unit tests: the dev loop, and CI's fast job"
+depends = ["lint", "selftest", "test"]
 
 # build and dist declare no sources to skip on: the version they stamp in is
 # the commit count and the CI run number (or the time), which change when no
@@ -40,5 +43,5 @@ description = "Every architecture's binary and tarball, the units and SHA256SUMS
 run = "./run dist"
 
 [tasks.release-due]
-description = "Succeed if anything in RELEASE_PATHS changed since the last release tag, or there is none; fail otherwise"
+description = "Succeed if anything in RELEASE_PATHS changed since the commit the last release was made from, or there is none; fail otherwise"
 run = "./run release-due"

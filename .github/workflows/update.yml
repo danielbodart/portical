@@ -6,20 +6,20 @@
 #     minor moves by hand, with the nixpkgs attribute it must match);
 #   - the Dockerfile's base image, to the current digest of its tag;
 #   - the Go modules, to their latest versions (gokit, as the release tags it
-#     makes), with nix/package.nix's vendorHash recomputed to match.
+#     makes).
 #
 # Sunday 21:23 UTC is the window every one of danielbodart's repos shares, two
 # hours before nix-config takes its own inputs at 23:23 on the same
-# nixos-26.05: so the package pushed to danielbodart.cachix.org here is the
-# derivation nix-config builds.
+# nixos-26.05. Its Portical is a release's binary, pinned by tag (flake.nix),
+# so nothing here is built for it.
 #
 # The changes are committed straight to the default branch, no pull request,
 # named by what moved. A push with GITHUB_TOKEN starts no workflow, so when
 # something a release is built from moved (RELEASE_PATHS in mise.toml), this
 # dispatches CI with `release`, which tests it again and publishes. A week in
-# which only flake.lock moved releases nothing: the images and binaries are
-# built by mise's Go, not the flake, so a release would be the same code under
-# a new version.
+# which only flake.lock moved releases nothing: the images, binaries and the
+# flake's package are all built by mise's Go, so a release would be the same
+# code under a new version.
 name: Weekly update
 
 on:
@@ -63,14 +63,6 @@ jobs:
 
       - uses: cachix/install-nix-action@v31
 
-      # Read from the cache, and push only the package at the end: never the
-      # VM test's closure, which would fill the free tier.
-      - uses: cachix/cachix-action@v17
-        with:
-          name: danielbodart
-          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
-          skipPush: true
-
       - uses: jdx/mise-action@v5
 
       - uses: docker/setup-buildx-action@v4
@@ -107,7 +99,7 @@ jobs:
 
       # By mise's Go, the one just installed if it moved. GOTOOLCHAIN=local: a
       # module that wants a newer Go than that fails here, rather than quietly
-      # moving go.mod past the flake's go_1_27.
+      # moving go.mod past the Go mise.toml pins.
       - name: Go modules
         env:
           GOTOOLCHAIN: local
@@ -116,14 +108,6 @@ jobs:
           mise exec -- go mod tidy
           git diff -U0 go.mod |
             awk '/^\+[^+]/ { sub(/^\+(require)?[ \t]*/, ""); if ($1 != "" && $1 != "go" && $1 != "toolchain" && $1 != "(" && $1 != ")") print $1 }' >> moved.txt
-          if ! git diff --quiet go.sum; then
-            sed -i 's|vendorHash = "sha256-[^"]*";|vendorHash = lib.fakeHash;|' nix/package.nix
-            # The build fails, by design, so its status is ignored: what it
-            # reports is the point.
-            hash=$(nix build .#default 2>&1 | sed -n 's/^ *got: *\(sha256-[^ ]*\).*/\1/p' | head -1 || true)
-            [ -n "$hash" ] || { echo "Nix reported no vendorHash"; exit 1; }
-            sed -i "s|vendorHash = lib.fakeHash;|vendorHash = \"$hash\";|" nix/package.nix
-          fi
 
       - name: Anything moved?
         id: moved
@@ -138,12 +122,19 @@ jobs:
       - name: Check
         if: steps.moved.outputs.value
         run: mise run check
-      - name: Flake check
-        if: steps.moved.outputs.value
-        run: nix flake check -L
       - name: Dist
         if: steps.moved.outputs.value
         run: mise run dist
+      # As CI's nix job: dist's binaries made the flake's release (./run
+      # nix-local-release, which stages a nix/release.json that the commit
+      # below must not take), then every check, the VM test included.
+      - name: Flake check
+        if: steps.moved.outputs.value
+        run: |
+          ./run nix-local-release
+          nix flake check -L
+          git rm -q --cached nix/release.json
+          rm nix/release.json
       - name: Image
         if: steps.moved.outputs.value
         run: ./run smoke
@@ -158,14 +149,10 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add flake.lock mise.toml Dockerfile go.mod go.sum nix/package.nix
+          git add flake.lock mise.toml Dockerfile go.mod go.sum
           git commit -qm "Weekly update: $MOVED"
           git pull -q --rebase origin "$BRANCH"
           git push -q origin "HEAD:$BRANCH"
-
-      - name: Push the package to Cachix
-        if: steps.moved.outputs.value
-        run: nix build .#default --print-out-paths | cachix push danielbodart
 
       - name: Release
         if: steps.moved.outputs.value

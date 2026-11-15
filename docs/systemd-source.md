@@ -382,19 +382,18 @@ units", and "Watching for container changes" became "Watching for changes".
 
 ### Flake
 
-`flake.nix` with `nixpkgs` (unstable, for `buildGo127Module`: go.mod says
-`go 1.27`, and the default `buildGoModule` there is still Go 1.26) as its only
-input, for `x86_64-linux` and `aarch64-linux`. The pieces are in `nix/`:
-`package.nix`, `module.nix`, `module-check.nix` and `vm-test.nix`.
+`flake.nix` with `nixpkgs` (nixos-26.05) as its only input. The pieces are in
+`nix/`: `module.nix`, `module-check.nix` and `vm-test.nix`.
 
-- `packages.<system>.default` - the same static `go build` as `./run build`,
-  with the version from `MAJOR`, the flake's commit count and its
-  `lastModifiedDate` linked in with `-X`. godbus, gokit and gokit/dbusx are
-  vendored by the build's fixed-output `vendorHash`. Nothing is wrapped and nothing goes
-  on `PATH`: `published` asks the kernel itself. `go test` runs as the
-  package's check phase.
-- `checks.<system>` - the package (and so `go test`); the module evaluation
-  check; the VM test.
+- `packages.<system>.default` (and `.portical`) - since 2026-11-15, not a
+  build from source but the release's own static binary, the one `mise run
+  dist` built in CI, fetched by the URL and hash in `nix/release.json`. That
+  file is only on a release tag, whose commit is a child of the released
+  `master` commit (ci.yml's release job); on `master` there is no package.
+  Nothing is wrapped and nothing goes on `PATH`: `published` asks the kernel
+  itself.
+- `checks.<system>` - the module evaluation check, and, where there is a
+  package, the VM test. `go test` is `mise run check`'s.
 - `nixosModules.default`.
 
 ### Module
@@ -550,7 +549,9 @@ skip where there is none, as in Nix's build sandbox.
   are tested where they live, in `dbusx`.
 - **Arguments** - `--source` repeated and comma separated,
   `PORTICAL_SOURCES`, an unknown source rejected, `--systemd-key`.
-- **Nix** - `nix flake check`: build, `go test`, module evaluation, VM test.
+- **Nix** - `nix flake check`: module evaluation, and the VM test on the
+  release's binary (CI makes its own dist the release with `./run
+  nix-local-release`).
 
 ## README
 
@@ -573,6 +574,8 @@ knowing" about one Portical per host.
    parsed from another program's output.
 3. **Go comes from nixos-unstable**, as `buildGo127Module`. The lock is pinned
    to the same unstable revision as the development host's system.
+   (Superseded: the flake now installs the release's binary, built by mise's
+   Go, and follows nixos-26.05.)
 4. **`%i` is not expanded.** A term containing it is reported as unrecognised.
    Still small to add later.
 5. **`DesiredForward.Owner`** is the owner's name for logs and the

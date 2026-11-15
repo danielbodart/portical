@@ -7,6 +7,9 @@ let
 
   base = {
     imports = [ self.nixosModules.default ];
+    # A stand-in: what is checked is what the module renders, and the
+    # release's binary exists only on a release tag (flake.nix).
+    services.portical.package = pkgs.writeShellScriptBin "portical" "";
     boot.loader.grub.enable = false;
     fileSystems."/" = {
       device = "none";

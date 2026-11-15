@@ -200,15 +200,20 @@ of which are in v2, and to [@jhenkens](https://github.com/jhenkens), whose
   https://token.actions.githubusercontent.com <asset>`).
 - **Nix**: flake input `github:danielbodart/portical/v<version>` with
   `inputs.nixpkgs.follows = "nixpkgs"`; `packages.default`, and
-  `nixosModules.default` (`services.portical`). Built by nixpkgs (nixos-26.05,
-  `go_1_27`) and cached at `danielbodart.cachix.org`.
+  `nixosModules.default` (`services.portical`). The package is that release's
+  own static binary for x86_64, aarch64 or armv7l, fetched by the hash in the
+  tag's `nix/release.json`, not a second build from source: a release's tag is
+  a commit of its own, a child of the released `master` commit, that adds
+  only that file. On `master` the flake has the module but no package, so pin
+  a tag.
 
 Updated weekly (Sunday 21:23 UTC): the flake's inputs, mise's tools to the
 latest patch of their minor, the base image's digest and the Go modules,
 committed straight to `master` once every channel's tests pass. A release is
 cut when the Go source, `go.mod`/`go.sum`, `mise.toml`, `./run`, the
-`Dockerfile` or the unit changed since the last release (`RELEASE_PATHS` in
-`mise.toml`), and only once `mise run check`, the flake check with its NixOS
+`Dockerfile` or the unit changed since the commit the last release was made
+from (`RELEASE_PATHS` in `mise.toml`; `./run last-release` names it), and
+only once `mise run check`, the flake check with its NixOS
 VM test, the image run and the tarball installed under systemd pass.
 
 ## Development
@@ -227,8 +232,8 @@ mise run build     # a static binary for this machine, into dist/
 mise run dist      # every architecture's binary and tarball, the unit and checksums, into dist/
 ./run smoke        # the image for this machine from dist/, run: it must say its version
 ./run image        # the image, for every architecture, from dist/
-nix build          # the Nix package, running the tests on the way
-nix flake check    # also the module check and the NixOS VM test (needs KVM)
+nix flake check    # the module check; with a release.json, the NixOS VM test too (needs KVM)
+./run nix-local-release   # after mise run dist: dist/ as the flake's release, for nix build and the VM test
 ```
 
 `./run` is a POSIX shell script and the only place any of this is defined, so CI

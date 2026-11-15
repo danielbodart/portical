@@ -2,11 +2,12 @@ name: CI
 
 # Every push to the default branch is tested in every channel: mise's checks,
 # the flake with its NixOS VM test, the image run, and the tarball installed
-# under a real systemd. A release - the images and a GitHub release of the
-# same version - waits for all of them, and is made only when something it is
-# built from (RELEASE_PATHS in mise.toml) changed since the last release tag,
-# or a dispatch asks for one with `release`. The weekly update dispatches it
-# so.
+# under a real systemd, all on the one set of binaries the dist job builds. A
+# release - the images and a GitHub release of the same version, whose tag the
+# flake installs those binaries from - waits for all of them, and is made only
+# when something it is built from (RELEASE_PATHS in mise.toml) changed since
+# the last release, or a dispatch asks for one with `release`. The weekly
+# update dispatches it so.
 #
 # Replaces the CircleCI pipeline, which failed silently at checkout for two
 # years: its deploy key lost repo access, every build died before the Docker
@@ -46,11 +47,15 @@ jobs:
       - uses: jdx/mise-action@v5
       - run: mise run check
 
-  # The flake: the package (its build runs the tests), the module evaluation
-  # and the NixOS VM test, which boots a router, a host and a client and sends
-  # traffic through a forward.
+  # The flake: the module evaluation and the NixOS VM test, which boots a
+  # router, a host and a client and sends traffic through a forward. The
+  # flake's package is a release's binary (flake.nix), so the VM test runs
+  # this run's dist, made the flake's release by ./run nix-local-release: the
+  # very binary this run releases, through the same release.json, fetchurl
+  # and install a pinned tag gives, with nothing downloaded.
   nix:
     runs-on: ubuntu-latest
+    needs: dist
     steps:
       - uses: actions/checkout@v7
 
@@ -65,20 +70,31 @@ jobs:
 
       - uses: cachix/install-nix-action@v31
 
-      # Read from the cache, and push only the package below: never the VM
-      # test's closure, which would fill the free tier.
-      - uses: cachix/cachix-action@v17
-        with:
-          name: danielbodart
-          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
-          skipPush: true
-
-      - name: Flake check
+      # As master has it: no release.json, so no package and no VM test.
+      - name: Flake check, as master has it
         run: nix flake check -L
 
-      - name: Push the package to Cachix
-        if: github.event_name != 'pull_request' && github.ref_name == github.event.repository.default_branch
-        run: nix build .#default --print-out-paths | cachix push danielbodart
+      - uses: actions/download-artifact@v8
+        with:
+          name: dist
+      - run: tar -xf dist.tar
+
+      - name: This run's binaries as the flake's release
+        run: ./run nix-local-release
+
+      - name: Flake check, as a release has it
+        run: nix flake check -L
+
+      # The package must be dist's binary, saying dist's version.
+      - name: The package
+        run: |
+          said=$(nix run .#default -- --version 2>/dev/null)
+          [ "$said" = "$(cat dist/version)" ] || { echo "the package says '$said' but dist is $(cat dist/version)"; exit 1; }
+
+      # The other systems the release has a binary for are evaluated, not
+      # built: no runner here is one of them.
+      - name: The other systems, evaluated
+        run: nix flake check --no-build --all-systems
 
   # Everything the upstream channel ships, built once, by mise's Go: the
   # images, the tests below and the release all use these bytes.
@@ -90,10 +106,12 @@ jobs:
     steps:
       # The whole history and its tags: the version's minor is the commit
       # count, which ./run refuses to compute from a shallow clone, and
-      # whether to release is a diff from the last release tag.
+      # whether to release is a diff from the commit the last release tag
+      # released, which is on no branch (the release job says why).
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
+          fetch-tags: true
       - uses: jdx/mise-action@v5
       - run: mise run dist
 
@@ -143,6 +161,19 @@ jobs:
       - run: tar -xf dist.tar
       - run: ./run install-check
 
+  # THE TAG'S OWN COMMIT. flake.nix's package is the release's binary,
+  # fetched, and a flake fetched as github:danielbodart/portical/v<V> sees its
+  # commit but not its tag, so the version and each binary's URL and hash must
+  # be in the tagged tree: nix/release.json (./run release-json). It is
+  # committed, by github-actions[bot], as a one-commit child of the released
+  # master commit, and only the tag v<V> is pushed, pointing at that child;
+  # master never gets the commit, so no local master diverges on a release
+  # and nothing races anyone's push. A tag push starts no run here. (Never
+  # write the skip-CI marker, the words skip and ci in square brackets, in a
+  # commit message, even to say it is not needed: GitHub then starts no
+  # workflow at all for the push, and the commit goes untested and
+  # unreleased.) So the last release is the tag's parent, not an ancestor tag
+  # (./run last-release, which release-due and the notes ask).
   release:
     runs-on: ubuntu-latest
     needs: [check, nix, dist, docker, tarball]
@@ -155,6 +186,8 @@ jobs:
       packages: write
       # cosign's keyless signing: the run's OIDC identity is the signer.
       id-token: write
+      # To start CI on master's head, when this commit cannot be tagged.
+      actions: write
     env:
       VERSION: ${{ needs.dist.outputs.version }}
     steps:
@@ -163,24 +196,57 @@ jobs:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
+          fetch-tags: true
+
+      # GitHub refuses GITHUB_TOKEN, which can never hold the workflows
+      # permission, a new ref whose .github/workflows differ from the default
+      # branch's head ("Resource not accessible by integration"): the tag of
+      # this commit, once master has moved on to a commit that changed a
+      # workflow, would be one. Then the release is the head's to make, its
+      # commits including this one's: its own run makes it, or, where it has
+      # none (a push made with GITHUB_TOKEN), one started here. Decided before
+      # anything is published.
+      - name: Can this commit be tagged?
+        id: taggable
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          BRANCH: ${{ github.ref_name }}
+          FORCE: ${{ inputs.release || false }}
+        run: |
+          git fetch -q origin "$BRANCH"
+          head=$(git rev-parse FETCH_HEAD)
+          if [ "$head" != "$GITHUB_SHA" ] && ! git diff --quiet "$GITHUB_SHA" "$head" -- .github/workflows; then
+            echo "::warning::$BRANCH is at ${head:0:7}, which changed a workflow since ${GITHUB_SHA:0:7}: GITHUB_TOKEN cannot tag ${GITHUB_SHA:0:7}, so the release is ${head:0:7}'s"
+            if [ "$(gh run list --workflow ci.yml --commit "$head" --json databaseId --jq length)" = 0 ]; then
+              gh workflow run ci.yml --ref "$BRANCH" -f release="$FORCE"
+            fi
+            exit 0
+          fi
+          echo "value=true" >> "$GITHUB_OUTPUT"
       - uses: actions/download-artifact@v8
+        if: steps.taggable.outputs.value
         with:
           name: dist
-      - run: tar -xf dist.tar
+      - if: steps.taggable.outputs.value
+        run: tar -xf dist.tar
       - uses: jdx/mise-action@v5
+        if: steps.taggable.outputs.value
 
       # Each asset gets a sigstore bundle beside it, as capsper's tarballs do:
       # `cosign verify-blob --bundle <asset>.sigstore.json` proves this
       # workflow, on this repository, built it.
       - name: Sign
+        if: steps.taggable.outputs.value
         run: |
           for f in dist/release/*; do
             cosign sign-blob --yes --bundle "$f.sigstore.json" "$f"
           done
 
       - uses: docker/setup-buildx-action@v4
+        if: steps.taggable.outputs.value
 
       - uses: docker/login-action@v4
+        if: steps.taggable.outputs.value
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_PASSWORD }}
@@ -190,12 +256,14 @@ jobs:
       # org.opencontainers.image.source label links the package to this
       # repository.
       - uses: docker/login-action@v4
+        if: steps.taggable.outputs.value
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Push the images
+        if: steps.taggable.outputs.value
         uses: docker/build-push-action@v7
         with:
           context: .
@@ -216,10 +284,52 @@ jobs:
           build-args: |
             VERSION=${{ env.VERSION }}
 
-      # A re-run has the same run number and so the same version, so the
-      # release may already exist: its assets are replaced rather than the job
-      # failing.
+      # Notes from the commits since the last release, written before this
+      # release's tag exists, so the last release is the one before it.
+      - name: Release notes
+        if: steps.taggable.outputs.value
+        run: |
+          {
+            if last=$(./run last-release); then
+              git log "${last#* }..$GITHUB_SHA" --pretty='- %s (%h)'
+            else
+              git log -1 --pretty='- %s (%h)' "$GITHUB_SHA"
+            fi
+            echo
+            echo "Image: \`danielbodart/portical:$VERSION\` or \`ghcr.io/danielbodart/portical:$VERSION\`"
+            echo "Nix: \`github:danielbodart/portical/v$VERSION\` (its packages are these binaries)"
+          } > notes.md
+
+      # The tag, on its own commit (see the top of this job): nix/release.json
+      # for dist's binaries, committed on a detached HEAD whose parent is the
+      # commit this run tested, and only the tag pushed. A re-run has the
+      # same run number and so the same version, so the tag may already be
+      # there, and is left as it is: a tag never moves.
+      - name: Tag v<V> on a child commit holding nix/release.json
+        if: steps.taggable.outputs.value
+        run: |
+          tag="v$VERSION"
+          if git ls-remote --exit-code --tags origin "refs/tags/$tag" >/dev/null; then
+            echo "$tag is already pushed"
+            exit 0
+          fi
+          git checkout -q --detach "$GITHUB_SHA"
+          mkdir -p nix
+          ./run release-json > nix/release.json
+          cat nix/release.json
+          git add nix/release.json
+          git -c user.name="github-actions[bot]" \
+              -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
+              commit -q -m "Release $tag" \
+              -m "nix/release.json, for flake.nix: the release's version and each binary's URL and hash. This commit is on no branch; only the tag $tag names it."
+          git tag "$tag"
+          git push -q origin "refs/tags/$tag"
+
+      # The release, on the tag just pushed (--verify-tag: never one GitHub
+      # would make itself, on master). A re-run's release may already exist:
+      # its assets are replaced rather than the job failing.
       - name: Publish
+        if: steps.taggable.outputs.value
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -227,17 +337,7 @@ jobs:
           if gh release view "$tag" >/dev/null 2>&1; then
             gh release upload "$tag" dist/release/* --clobber
           else
-            # The notes are the commits since the last release.
-            {
-              if prev=$(git describe --tags --abbrev=0 --match 'v*' "$GITHUB_SHA" 2>/dev/null); then
-                git log "$prev..$GITHUB_SHA" --pretty='- %s (%h)'
-              else
-                git log -1 --pretty='- %s (%h)' "$GITHUB_SHA"
-              fi
-              echo
-              echo "Image: \`danielbodart/portical:$VERSION\` or \`ghcr.io/danielbodart/portical:$VERSION\`"
-            } > notes.md
-            gh release create "$tag" dist/release/* --target "$GITHUB_SHA" --title "$tag" --latest --notes-file notes.md
+            gh release create "$tag" dist/release/* --verify-tag --title "$tag" --latest --notes-file notes.md
           fi
 
   # Docker Hub has not synced a README from GitHub since Automated Builds went
