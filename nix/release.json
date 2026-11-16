@@ -1,0 +1,17 @@
+{
+  "version": "2.106.7",
+  "assets": {
+    "x86_64-linux": {
+      "url": "https://github.com/danielbodart/portical/releases/download/v2.106.7/portical-linux-x64",
+      "hash": "sha256-xrdEmElL2OaBzBAe+FZVMZ/5T16yfGEcVARVNtkUHMA="
+    },
+    "aarch64-linux": {
+      "url": "https://github.com/danielbodart/portical/releases/download/v2.106.7/portical-linux-arm64",
+      "hash": "sha256-zrgC8z1/igUz3D4IRQdKtUk8KkkKMClNzMPZSR1tvGM="
+    },
+    "armv7l-linux": {
+      "url": "https://github.com/danielbodart/portical/releases/download/v2.106.7/portical-linux-armv7",
+      "hash": "sha256-1ntEHTTsNFMHFAZL2M4HNRcalI083crdZuVNM1RFBJU="
+    }
+  }
+}
