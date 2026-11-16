@@ -211,9 +211,9 @@ Updated weekly (Sunday 21:23 UTC): the flake's inputs, mise's tools to the
 latest patch of their minor, the base image's digest and the Go modules,
 committed straight to `master` once every channel's tests pass. A release is
 cut when the Go source, `go.mod`/`go.sum`, `mise.toml`, `./run`, the
-`Dockerfile` or the unit changed since the commit the last release was made
-from (`RELEASE_PATHS` in `mise.toml`; `./run last-release` names it), and
-only once `mise run check`, the flake check with its NixOS
+`Dockerfile`, the unit, `flake.nix` or the NixOS module changed since the
+commit the last release was made from (`RELEASE_PATHS` in `mise.toml`;
+`./run last-release` names it), and only once `mise run check`, the flake check with its NixOS
 VM test, the image run and the tarball installed under systemd pass.
 
 ## Development

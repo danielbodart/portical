@@ -7,12 +7,18 @@ go = "1.27.4"
 # Signs the release assets, keyless, in CI.
 cosign = "3.0.6"
 
-# What a release is built from. A change to any of these since the last
-# release (./run last-release: the commit its tag's parent is) releases (mise run release-due, which CI and the weekly update
-# ask); anything else - docs, workflows, flake.nix, flake.lock and nix/ - goes
-# out with the next release one of these makes.
+# What a release is built from, and how a host installs it: the flake's
+# package (flake.nix) and its NixOS module (nix/module.nix), which a host gets
+# only by pinning a release tag (Dan, 2026-11-16: a module fix must reach the
+# hosts within the hour, so it cuts a release). A change to any of these since
+# the last release (./run last-release: the commit its tag's parent is)
+# releases (mise run release-due, which CI and the weekly update ask);
+# anything else - docs, workflows, flake.lock and the flake's checks
+# (nix/module-check.nix, nix/vm-test.nix) - goes out with the next release one
+# of these makes. nix/release.json is a release's output, on its tag's own
+# commit, never on master.
 [env]
-RELEASE_PATHS = "main.go internal go.mod go.sum mise.toml run Dockerfile systemd"
+RELEASE_PATHS = "main.go internal go.mod go.sum mise.toml run Dockerfile systemd flake.nix nix/module.nix"
 
 [tasks.lint]
 description = "gofmt and go vet"
