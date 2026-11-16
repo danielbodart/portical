@@ -3,7 +3,7 @@
 # dev loop's. The weekly update moves each tool to the latest patch of its
 # minor; a new minor moves here by hand.
 [tools]
-go = "1.27.3"
+go = "1.27.4"
 # Signs the release assets, keyless, in CI.
 cosign = "3.0.6"
 
