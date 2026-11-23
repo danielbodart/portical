@@ -1,7 +1,7 @@
 github.com/danielbodart/gokit v0.10.9 h1:EEqVmVAIxMUpEqLrXdN5xn5wOH71saWwBPgyi9+N024=
 github.com/danielbodart/gokit v0.10.9/go.mod h1:2uVDeBiqXMUS1PXKXDTuyxta9nZE5fGR8cDtpXyRugM=
-github.com/danielbodart/gokit/dbusx v0.8.7 h1:NL+K+O8GV+qhzrD79oFFz7hgwD3v8/lLQnuyglr9saU=
-github.com/danielbodart/gokit/dbusx v0.8.7/go.mod h1:c5uNxPXjAW0QpD7yvfB/Rw8h1irCw6Q38oFfKC05tH0=
+github.com/danielbodart/gokit/dbusx v0.10.9 h1:6eqdTx68aU0tpSdI2S1pMj7a+TDlveRuYJtDLeLhrDQ=
+github.com/danielbodart/gokit/dbusx v0.10.9/go.mod h1:sD0x/8U5GxB9dgtCP3CGWO00C9U3WGRiHeGIg6FNvOY=
 github.com/godbus/dbus/v5 v5.2.4 h1:F2gUCy++NMIxGmo9J+z5le/+ZC8W1OgeR51P4i9ZB/U=
 github.com/godbus/dbus/v5 v5.2.4/go.mod h1:3AAv2+hPq5rdnr5txxxRwiGjPXamgoIHgz9FPBfOp3c=
 golang.org/x/sys v0.50.0 h1:dkKZEFTEKaLr1sjhs0WiKqoi8Jj5nHbS3Njmx1UoMJs=
